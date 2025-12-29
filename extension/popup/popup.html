@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AlphaDrop</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>AlphaDrop</h1>
+        <span id="status-indicator" class="status-dot"></span>
+      </header>
+
+      <div id="no-image" class="message">
+        <p>Right-click an image and select "Remove Background" to get started.</p>
+      </div>
+
+      <div id="main-content" class="hidden">
+        <section class="preview-section">
+          <div class="preview-container">
+            <div class="preview-box">
+              <label>Original</label>
+              <div class="image-wrapper">
+                <img id="original-image" alt="Original" />
+              </div>
+            </div>
+            <div class="preview-box">
+              <label>Result</label>
+              <div class="image-wrapper checkerboard">
+                <img id="result-image" alt="Result" />
+                <div id="loading-overlay" class="hidden">
+                  <div class="spinner"></div>
+                  <span>Processing...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="controls-section">
+          <div class="method-select">
+            <label for="method">Method:</label>
+            <select id="method">
+              <option value="auto">Auto (Recommended)</option>
+              <option value="matting">AI Matting</option>
+              <option value="segmentation">AI Segmentation</option>
+              <option value="color">Color-Based</option>
+            </select>
+          </div>
+
+          <div class="buttons">
+            <button id="process-btn" class="btn primary">Remove Background</button>
+            <button id="download-btn" class="btn secondary" disabled>Download PNG</button>
+          </div>
+        </section>
+
+        <section id="info-section" class="info-section hidden">
+          <div id="method-info"></div>
+          <div id="confidence-info"></div>
+          <div id="analysis-info"></div>
+        </section>
+
+        <section id="error-section" class="error-section hidden">
+          <p id="error-message"></p>
+        </section>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
