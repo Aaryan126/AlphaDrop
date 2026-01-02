@@ -56,6 +56,34 @@
           </div>
         </section>
 
+        <section id="refinement-section" class="refinement-section hidden">
+          <div class="refinement-header">
+            <span>Edge Refinement</span>
+            <button id="reset-refinement" class="btn-small">Reset</button>
+          </div>
+
+          <div class="slider-group">
+            <label for="feather-slider">
+              Feather: <span id="feather-value">0</span>px
+            </label>
+            <input type="range" id="feather-slider" min="0" max="10" value="0" step="1" />
+          </div>
+
+          <div class="slider-group">
+            <label for="edge-adjust-slider">
+              Edge Adjust: <span id="edge-adjust-value">0</span>px
+            </label>
+            <input type="range" id="edge-adjust-slider" min="-5" max="5" value="0" step="1" />
+          </div>
+
+          <div class="slider-group">
+            <label for="smooth-slider">
+              Smooth: <span id="smooth-value">0</span>
+            </label>
+            <input type="range" id="smooth-slider" min="0" max="10" value="0" step="1" />
+          </div>
+        </section>
+
         <section id="info-section" class="info-section hidden">
           <div id="method-info"></div>
           <div id="confidence-info"></div>

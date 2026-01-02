@@ -79,7 +79,7 @@ async def remove_background(
     - auto: Automatically select best method based on image analysis
     - matting: AI-based matting (best for portraits)
     - segmentation: AI-based segmentation (best for objects)
-    - color: Color-based heuristic (best for logos/icons)
+    - color: Color-based heuristic (best for logos/icons with uniform backgrounds)
     """
     # Validate content type
     if image.content_type not in settings.supported_formats:
