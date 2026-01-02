@@ -153,6 +153,7 @@ async function loadPersistedState() {
     elements.originalImage.src = session.originalImage;
     elements.resultImage.src = `data:image/png;base64,${session.resultBase64}`;
     elements.resultCard.classList.remove("hidden");
+    elements.resultFrame.classList.add("checkerboard");
     elements.downloadBtn.classList.remove("hidden");
     elements.refineBtn.classList.remove("hidden");
 
@@ -366,6 +367,7 @@ async function loadImage(url) {
   // Reset UI
   elements.resultImage.src = "";
   elements.resultCard.classList.add("hidden");
+  elements.resultFrame.classList.remove("checkerboard");
   elements.loadingCard.classList.add("hidden");
   elements.downloadBtn.classList.add("hidden");
   elements.refineBtn.classList.add("hidden");
@@ -414,6 +416,7 @@ async function handleProcess() {
 
     // Show result card and controls
     elements.resultCard.classList.remove("hidden");
+    elements.resultFrame.classList.add("checkerboard");
     elements.downloadBtn.classList.remove("hidden");
     elements.refineBtn.classList.remove("hidden");
 
