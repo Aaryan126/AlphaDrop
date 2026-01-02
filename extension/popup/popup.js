@@ -20,6 +20,22 @@ const elements = {
   downloadBtn: document.getElementById("download-btn"),
   downloadBtnRefine: document.getElementById("download-btn-refine"),
   refineBtn: document.getElementById("refine-btn"),
+  eraserBtn: document.getElementById("eraser-btn"),
+  // Eraser modal
+  eraserModal: document.getElementById("eraser-modal"),
+  eraserCanvas: document.getElementById("eraser-canvas"),
+  eraserCanvasContainer: document.getElementById("eraser-canvas-container"),
+  eraserCursor: document.getElementById("eraser-cursor"),
+  eraserSize: document.getElementById("eraser-size"),
+  eraserSizeValue: document.getElementById("eraser-size-value"),
+  eraserClose: document.getElementById("eraser-close"),
+  eraserReset: document.getElementById("eraser-reset"),
+  eraserApply: document.getElementById("eraser-apply"),
+  zoomIn: document.getElementById("zoom-in"),
+  zoomOut: document.getElementById("zoom-out"),
+  zoomFit: document.getElementById("zoom-fit"),
+  zoomLevel: document.getElementById("zoom-level"),
+  eraserWorkspace: document.querySelector(".eraser-workspace"),
   // Inline controls switching
   mainControls: document.getElementById("main-controls"),
   refinementControls: document.getElementById("refinement-controls"),
@@ -86,6 +102,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
   setupProgressListener();
   setupCropEventListeners();
+  setupEraserEventListeners();
 });
 
 // ============================================
@@ -156,6 +173,7 @@ async function loadPersistedState() {
     elements.resultFrame.classList.add("checkerboard");
     elements.downloadBtn.classList.remove("hidden");
     elements.refineBtn.classList.remove("hidden");
+    elements.eraserBtn.classList.remove("hidden");
 
     // Restore refinement data
     await storeOriginalResult(session.resultBase64);
@@ -188,8 +206,11 @@ function setupProgressListener() {
 
 // Set the target progress (from backend) - animation will smoothly catch up
 function setTargetProgress(percent) {
-  progressState.target = percent;
-  progressState.lastUpdate = performance.now();
+  // Only accept higher values to prevent flickering (progress never goes backward)
+  if (percent > progressState.target) {
+    progressState.target = percent;
+    progressState.lastUpdate = performance.now();
+  }
 
   // Start animation loop if not already running
   if (!progressState.isAnimating) {
@@ -198,25 +219,27 @@ function setTargetProgress(percent) {
   }
 }
 
-// Animation loop for smooth progress with drift
+// Animation loop for smooth progress
 function animateProgress() {
   const now = performance.now();
   const timeSinceUpdate = now - progressState.lastUpdate;
 
-  // Calculate how much to move toward target
+  // Calculate how much to move toward target (only forward)
   const diff = progressState.target - progressState.display;
 
-  if (Math.abs(diff) > 0.1) {
+  if (diff > 0.1) {
     // Smooth interpolation toward target (ease-out feel)
-    // Move faster when far from target, slower when close
-    const speed = Math.max(0.08, Math.min(0.2, Math.abs(diff) / 100));
-    progressState.display += diff * speed;
-  } else if (progressState.target < 95 && timeSinceUpdate > 300) {
-    // Drift: slowly creep forward during stalls, but never exceed target
+    // Constant speed for more predictable movement
+    const speed = 0.12;
+    const step = Math.max(0.5, diff * speed);
+    progressState.display = Math.min(progressState.display + step, progressState.target);
+  } else if (progressState.target < 95 && timeSinceUpdate > 500) {
+    // Drift: slowly creep forward during stalls, but stay below target
     // This prevents the "frozen" feeling
-    const driftAmount = 0.02; // Very slow drift
-    const maxDrift = progressState.target - 1; // Never exceed target - 1
-    progressState.display = Math.min(progressState.display + driftAmount, maxDrift);
+    const maxDrift = Math.max(progressState.display, progressState.target - 2);
+    if (progressState.display < maxDrift) {
+      progressState.display += 0.03;
+    }
   }
 
   // Update the visual progress ring
@@ -371,6 +394,7 @@ async function loadImage(url) {
   elements.loadingCard.classList.add("hidden");
   elements.downloadBtn.classList.add("hidden");
   elements.refineBtn.classList.add("hidden");
+  elements.eraserBtn.classList.add("hidden");
   hideError();
   showMainView();
 }
@@ -419,6 +443,7 @@ async function handleProcess() {
     elements.resultFrame.classList.add("checkerboard");
     elements.downloadBtn.classList.remove("hidden");
     elements.refineBtn.classList.remove("hidden");
+    elements.eraserBtn.classList.remove("hidden");
 
     // Persist session for next popup open
     await savePersistedState();
@@ -963,6 +988,300 @@ function setupCropEventListeners() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && elements.cropModal.classList.contains("active")) {
       closeCropModal();
+    }
+  });
+}
+
+// ============================================
+// Eraser Modal Functions
+// ============================================
+
+const eraserState = {
+  canvas: null,
+  ctx: null,
+  isDrawing: false,
+  brushSize: 20,
+  lastX: 0,
+  lastY: 0,
+  originalImageData: null,
+  scale: 1,
+  zoom: 1,
+  minZoom: 0.25,
+  maxZoom: 5,
+  fitZoom: 1,
+  baseCanvasWidth: 0,
+  baseCanvasHeight: 0,
+};
+
+function openEraserModal() {
+  if (processingCanvas.width === 0 || processingCanvas.height === 0) return;
+
+  // Initialize eraser canvas with current result
+  const canvas = elements.eraserCanvas;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+  // Set canvas size to match the processing canvas
+  canvas.width = processingCanvas.width;
+  canvas.height = processingCanvas.height;
+
+  // Store base dimensions
+  eraserState.baseCanvasWidth = canvas.width;
+  eraserState.baseCanvasHeight = canvas.height;
+
+  // Draw current result onto eraser canvas
+  ctx.drawImage(processingCanvas, 0, 0);
+
+  // Store original for reset
+  eraserState.originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  eraserState.canvas = canvas;
+  eraserState.ctx = ctx;
+
+  elements.eraserModal.classList.add("active");
+
+  // Calculate fit zoom after modal is visible
+  requestAnimationFrame(() => {
+    calculateFitZoom();
+    setZoom(eraserState.fitZoom);
+    updateEraserCursor();
+  });
+}
+
+function closeEraserModal() {
+  elements.eraserModal.classList.remove("active");
+  eraserState.isDrawing = false;
+  eraserState.zoom = 1;
+  elements.eraserCanvas.style.width = "";
+  elements.eraserCanvas.style.height = "";
+}
+
+function resetEraser() {
+  if (eraserState.originalImageData && eraserState.ctx) {
+    eraserState.ctx.putImageData(eraserState.originalImageData, 0, 0);
+  }
+}
+
+function applyEraser() {
+  if (!eraserState.canvas) return;
+
+  // Copy eraser canvas to processing canvas
+  processingCanvas.width = eraserState.canvas.width;
+  processingCanvas.height = eraserState.canvas.height;
+  processingCtx.drawImage(eraserState.canvas, 0, 0);
+
+  // Update result image
+  elements.resultImage.src = processingCanvas.toDataURL("image/png");
+
+  // Update state
+  state.resultBase64 = processingCanvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+  state.originalResultData = processingCtx.getImageData(0, 0, processingCanvas.width, processingCanvas.height);
+
+  // Save
+  savePersistedState();
+
+  closeEraserModal();
+}
+
+function updateEraserCursor() {
+  const size = parseInt(elements.eraserSize.value);
+  eraserState.brushSize = size;
+  elements.eraserSizeValue.textContent = `${size}px`;
+
+  // Cursor uses fixed positioning, so multiply by zoom for visual size
+  const visualSize = size * eraserState.zoom;
+  elements.eraserCursor.style.width = `${visualSize}px`;
+  elements.eraserCursor.style.height = `${visualSize}px`;
+}
+
+// ============================================
+// Zoom Functions
+// ============================================
+
+function calculateFitZoom() {
+  const workspace = elements.eraserWorkspace;
+  const padding = 32; // 16px padding on each side
+  const availableWidth = workspace.clientWidth - padding;
+  const availableHeight = workspace.clientHeight - padding;
+
+  const scaleX = availableWidth / eraserState.baseCanvasWidth;
+  const scaleY = availableHeight / eraserState.baseCanvasHeight;
+
+  eraserState.fitZoom = Math.min(scaleX, scaleY, 1); // Don't upscale beyond 100%
+}
+
+function setZoom(zoom) {
+  // Clamp zoom to valid range
+  zoom = Math.max(eraserState.minZoom, Math.min(eraserState.maxZoom, zoom));
+  eraserState.zoom = zoom;
+
+  // Apply zoom via CSS width/height (not transform) so layout is affected
+  const displayWidth = eraserState.baseCanvasWidth * zoom;
+  const displayHeight = eraserState.baseCanvasHeight * zoom;
+  elements.eraserCanvas.style.width = `${displayWidth}px`;
+  elements.eraserCanvas.style.height = `${displayHeight}px`;
+
+  // Update zoom level display
+  elements.zoomLevel.textContent = `${Math.round(zoom * 100)}%`;
+
+  // Update cursor size for new zoom
+  updateEraserCursor();
+}
+
+function zoomIn() {
+  const steps = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5];
+  const currentIndex = steps.findIndex(s => s >= eraserState.zoom);
+  const nextIndex = Math.min(currentIndex + 1, steps.length - 1);
+  setZoom(steps[nextIndex]);
+}
+
+function zoomOut() {
+  const steps = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5];
+  const currentIndex = steps.findIndex(s => s >= eraserState.zoom);
+  const prevIndex = Math.max(currentIndex - 1, 0);
+  setZoom(steps[prevIndex]);
+}
+
+function zoomToFit() {
+  calculateFitZoom();
+  setZoom(eraserState.fitZoom);
+
+  // Center the scroll position
+  requestAnimationFrame(() => {
+    const workspace = elements.eraserWorkspace;
+    workspace.scrollLeft = (workspace.scrollWidth - workspace.clientWidth) / 2;
+    workspace.scrollTop = (workspace.scrollHeight - workspace.clientHeight) / 2;
+  });
+}
+
+function handleZoomWheel(e) {
+  if (!elements.eraserModal.classList.contains("active")) return;
+
+  // Only zoom if Ctrl/Cmd is held
+  if (!e.ctrlKey && !e.metaKey) return;
+
+  e.preventDefault();
+
+  const delta = e.deltaY > 0 ? -0.1 : 0.1;
+  const newZoom = eraserState.zoom + delta;
+  setZoom(newZoom);
+}
+
+function handleEraserMouseDown(e) {
+  eraserState.isDrawing = true;
+  const pos = getEraserPosition(e);
+  eraserState.lastX = pos.x;
+  eraserState.lastY = pos.y;
+
+  // Draw single point
+  eraseAt(pos.x, pos.y);
+}
+
+function handleEraserMouseMove(e) {
+  // Cursor uses fixed positioning - use screen coordinates directly
+  elements.eraserCursor.style.left = `${e.clientX}px`;
+  elements.eraserCursor.style.top = `${e.clientY}px`;
+
+  if (!eraserState.isDrawing) return;
+  if (!isOverCanvas(e)) return;
+
+  const pos = getEraserPosition(e);
+  eraseLine(eraserState.lastX, eraserState.lastY, pos.x, pos.y);
+  eraserState.lastX = pos.x;
+  eraserState.lastY = pos.y;
+}
+
+function handleEraserMouseUp() {
+  eraserState.isDrawing = false;
+}
+
+function handleEraserMouseLeave() {
+  eraserState.isDrawing = false;
+}
+
+function getEraserPosition(e) {
+  const rect = elements.eraserCanvas.getBoundingClientRect();
+  const scaleX = eraserState.canvas.width / rect.width;
+  const scaleY = eraserState.canvas.height / rect.height;
+
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+
+  return {
+    x: Math.max(0, Math.min(eraserState.canvas.width, x)),
+    y: Math.max(0, Math.min(eraserState.canvas.height, y)),
+  };
+}
+
+function isOverCanvas(e) {
+  const rect = elements.eraserCanvas.getBoundingClientRect();
+  return e.clientX >= rect.left && e.clientX <= rect.right &&
+         e.clientY >= rect.top && e.clientY <= rect.bottom;
+}
+
+function eraseAt(x, y) {
+  const ctx = eraserState.ctx;
+  const radius = eraserState.brushSize / 2;
+
+  // Use destination-out to make pixels transparent
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function eraseLine(x1, y1, x2, y2) {
+  const ctx = eraserState.ctx;
+  const radius = eraserState.brushSize / 2;
+
+  // Calculate distance and steps
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const steps = Math.max(Math.ceil(distance / (radius / 2)), 1);
+
+  ctx.globalCompositeOperation = "destination-out";
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = x1 + dx * t;
+    const y = y1 + dy * t;
+
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function setupEraserEventListeners() {
+  // Open eraser modal
+  elements.eraserBtn.addEventListener("click", openEraserModal);
+
+  // Eraser modal controls
+  elements.eraserClose.addEventListener("click", closeEraserModal);
+  elements.eraserReset.addEventListener("click", resetEraser);
+  elements.eraserApply.addEventListener("click", applyEraser);
+
+  // Brush size slider
+  elements.eraserSize.addEventListener("input", updateEraserCursor);
+
+  // Zoom controls
+  elements.zoomIn.addEventListener("click", zoomIn);
+  elements.zoomOut.addEventListener("click", zoomOut);
+  elements.zoomFit.addEventListener("click", zoomToFit);
+  elements.eraserWorkspace.addEventListener("wheel", handleZoomWheel, { passive: false });
+
+  // Drawing events - mousedown on canvas, but track movement on workspace
+  elements.eraserCanvas.addEventListener("mousedown", handleEraserMouseDown);
+  elements.eraserWorkspace.addEventListener("mousemove", handleEraserMouseMove);
+  elements.eraserWorkspace.addEventListener("mouseup", handleEraserMouseUp);
+  elements.eraserWorkspace.addEventListener("mouseleave", handleEraserMouseLeave);
+
+  // Close on escape
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && elements.eraserModal.classList.contains("active")) {
+      closeEraserModal();
     }
   });
 }
