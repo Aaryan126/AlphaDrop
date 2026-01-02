@@ -13,6 +13,7 @@ const elements = {
   resultFrame: document.getElementById("result-frame"),
   resultCard: document.getElementById("result-card"),
   loadingCard: document.getElementById("loading-card"),
+  progressCircle: document.getElementById("progress-circle"),
   statusDot: document.getElementById("status-dot"),
   methodPills: document.querySelectorAll(".method-pill"),
   processBtn: document.getElementById("process-btn"),
@@ -50,6 +51,15 @@ let state = {
   isRefinementView: false,
 };
 
+// Progress animation state
+const progressState = {
+  target: 0,           // Target progress from backend (0-100)
+  display: 0,          // Currently displayed progress (smoothly animated)
+  animationId: null,   // requestAnimationFrame ID
+  lastUpdate: 0,       // Timestamp of last backend update
+  isAnimating: false,  // Whether animation loop is running
+};
+
 // Canvas for image processing
 const processingCanvas = document.createElement("canvas");
 const processingCtx = processingCanvas.getContext("2d", { willReadFrequently: true });
@@ -59,7 +69,95 @@ document.addEventListener("DOMContentLoaded", async () => {
   await checkApiStatus();
   await loadPendingImage();
   setupEventListeners();
+  setupProgressListener();
 });
+
+// Listen for progress updates from background script
+function setupProgressListener() {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === "PROGRESS_UPDATE") {
+      setTargetProgress(message.progress);
+    }
+  });
+}
+
+// Set the target progress (from backend) - animation will smoothly catch up
+function setTargetProgress(percent) {
+  progressState.target = percent;
+  progressState.lastUpdate = performance.now();
+
+  // Start animation loop if not already running
+  if (!progressState.isAnimating) {
+    progressState.isAnimating = true;
+    animateProgress();
+  }
+}
+
+// Animation loop for smooth progress with drift
+function animateProgress() {
+  const now = performance.now();
+  const timeSinceUpdate = now - progressState.lastUpdate;
+
+  // Calculate how much to move toward target
+  const diff = progressState.target - progressState.display;
+
+  if (Math.abs(diff) > 0.1) {
+    // Smooth interpolation toward target (ease-out feel)
+    // Move faster when far from target, slower when close
+    const speed = Math.max(0.08, Math.min(0.2, Math.abs(diff) / 100));
+    progressState.display += diff * speed;
+  } else if (progressState.target < 95 && timeSinceUpdate > 300) {
+    // Drift: slowly creep forward during stalls, but never exceed target
+    // This prevents the "frozen" feeling
+    const driftAmount = 0.02; // Very slow drift
+    const maxDrift = progressState.target - 1; // Never exceed target - 1
+    progressState.display = Math.min(progressState.display + driftAmount, maxDrift);
+  }
+
+  // Update the visual progress ring
+  renderProgress(progressState.display);
+
+  // Continue animation if still processing
+  if (state.isProcessing && progressState.display < 100) {
+    progressState.animationId = requestAnimationFrame(animateProgress);
+  } else {
+    progressState.isAnimating = false;
+  }
+}
+
+// Render the progress ring (direct DOM update)
+function renderProgress(percent) {
+  const circumference = 97.4;
+  const offset = circumference - (percent / 100) * circumference;
+
+  if (elements.progressCircle) {
+    elements.progressCircle.style.strokeDashoffset = offset;
+  }
+}
+
+// Reset progress to 0
+function resetProgress() {
+  progressState.target = 0;
+  progressState.display = 0;
+  progressState.lastUpdate = performance.now();
+  progressState.isAnimating = false;
+
+  if (progressState.animationId) {
+    cancelAnimationFrame(progressState.animationId);
+    progressState.animationId = null;
+  }
+
+  renderProgress(0);
+}
+
+// Stop progress animation
+function stopProgressAnimation() {
+  progressState.isAnimating = false;
+  if (progressState.animationId) {
+    cancelAnimationFrame(progressState.animationId);
+    progressState.animationId = null;
+  }
+}
 
 function setupEventListeners() {
   // Method pill selection
@@ -184,6 +282,7 @@ async function handleProcess() {
   elements.processBtn.disabled = true;
   elements.resultCard.classList.add("hidden");
   elements.loadingCard.classList.remove("hidden");
+  resetProgress();
   hideError();
 
   try {
@@ -216,6 +315,7 @@ async function handleProcess() {
     state.isProcessing = false;
     elements.processBtn.disabled = false;
     elements.loadingCard.classList.add("hidden");
+    stopProgressAnimation();
   }
 }
 

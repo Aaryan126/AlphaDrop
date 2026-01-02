@@ -232,13 +232,41 @@ body {
   background-position: 0 0, 0 5px, 5px -5px, -5px 0;
 }
 
-/* Loading Spinner */
+/* Progress Indicator */
+.progress-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+}
+
+.progress-ring {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.progress-ring-bg {
+  stroke: var(--border-light);
+}
+
+.progress-ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  /* No CSS transition - animation handled by JS for smoother control */
+}
+
+/* Legacy spinner (fallback) */
 .loading-spinner {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
+  gap: 8px;
 }
 
 .spinner {

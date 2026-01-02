@@ -93,7 +93,7 @@ function blobToBase64(blob) {
 }
 
 /**
- * Process image through the API.
+ * Process image through the API with progress tracking.
  */
 async function processImage(imageUrl, method = "auto") {
   console.log("AlphaDrop: Processing image with method:", method);
@@ -110,24 +110,74 @@ async function processImage(imageUrl, method = "auto") {
   formData.append("image", imageBlob, `image.${extension}`);
   formData.append("method", method);
 
-  // Send to API
-  const response = await fetch(`${API_BASE}/v1/remove-background`, {
+  // Start the task
+  const startResponse = await fetch(`${API_BASE}/v1/start-task`, {
     method: "POST",
     body: formData,
   });
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || `API error: ${response.status}`);
+  if (!startResponse.ok) {
+    const error = await startResponse.json().catch(() => ({}));
+    throw new Error(error.detail || `API error: ${startResponse.status}`);
   }
 
-  const result = await response.json();
+  const { task_id } = await startResponse.json();
+  console.log("AlphaDrop: Task started:", task_id);
+
+  // Poll for progress
+  const result = await pollTaskProgress(task_id);
+
   console.log("AlphaDrop: API response:", {
     method: result.method_used,
     confidence: result.confidence,
   });
 
   return result;
+}
+
+/**
+ * Poll task progress until completion.
+ */
+async function pollTaskProgress(taskId) {
+  const POLL_INTERVAL = 200; // 200ms between polls
+  const MAX_POLLS = 300; // Max 60 seconds (300 * 200ms)
+
+  for (let i = 0; i < MAX_POLLS; i++) {
+    const response = await fetch(`${API_BASE}/v1/task/${taskId}`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to get task status: ${response.status}`);
+    }
+
+    const progress = await response.json();
+
+    // Send progress update to popup
+    chrome.runtime.sendMessage({
+      type: "PROGRESS_UPDATE",
+      taskId: taskId,
+      progress: progress.progress,
+      message: progress.message,
+      status: progress.status,
+    }).catch(() => {
+      // Popup might be closed, ignore
+    });
+
+    if (progress.status === "completed") {
+      if (progress.result) {
+        return progress.result;
+      }
+      throw new Error("Task completed but no result");
+    }
+
+    if (progress.status === "failed") {
+      throw new Error(progress.error || "Processing failed");
+    }
+
+    // Wait before next poll
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+  }
+
+  throw new Error("Processing timeout - task took too long");
 }
 
 /**

@@ -79,12 +79,15 @@
             </div>
           </div>
 
-          <!-- Loading Spinner (shows during processing) -->
+          <!-- Loading/Progress (shows during processing) -->
           <div id="loading-card" class="preview-card hidden">
             <span class="preview-label">Processing</span>
             <div class="preview-frame">
-              <div class="loading-spinner">
-                <div class="spinner"></div>
+              <div class="progress-container">
+                <svg class="progress-ring" viewBox="0 0 36 36">
+                  <circle class="progress-ring-bg" cx="18" cy="18" r="15.5" fill="none" stroke-width="3"/>
+                  <circle id="progress-circle" class="progress-ring-fill" cx="18" cy="18" r="15.5" fill="none" stroke-width="3" stroke-dasharray="97.4" stroke-dashoffset="97.4"/>
+                </svg>
               </div>
             </div>
           </div>
