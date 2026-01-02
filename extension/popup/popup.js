@@ -46,7 +46,7 @@ let state = {
   imageUrl: null,
   resultBase64: null,
   originalResultData: null,
-  selectedMethod: "segmentation",
+  selectedMethod: "matting",
   isProcessing: false,
   isRefinementView: false,
 };
@@ -64,13 +64,106 @@ const progressState = {
 const processingCanvas = document.createElement("canvas");
 const processingCtx = processingCanvas.getContext("2d", { willReadFrequently: true });
 
+// Persistence constants
+const STORAGE_KEY = "persistedSession";
+const MAX_STORAGE_MB = 4; // Max combined size in MB
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   await checkApiStatus();
-  await loadPendingImage();
+  await loadPersistedState(); // Try to restore previous session first
+  await loadPendingImage();   // Then check for new image from context menu
   setupEventListeners();
   setupProgressListener();
 });
+
+// ============================================
+// Persistence Functions
+// ============================================
+
+/**
+ * Save current session to chrome.storage.local
+ * Stores original image URL/base64 and result base64
+ */
+async function savePersistedState() {
+  if (!state.imageUrl || !state.resultBase64) return;
+
+  // Get original image as base64 if it's a URL
+  let originalBase64 = elements.originalImage.src;
+
+  // Calculate approximate size in MB
+  const originalSize = originalBase64.length / 1024 / 1024;
+  const resultSize = state.resultBase64.length / 1024 / 1024;
+  const totalSize = originalSize + resultSize;
+
+  if (totalSize > MAX_STORAGE_MB) {
+    console.log(`AlphaDrop: Images too large to persist (${totalSize.toFixed(1)}MB > ${MAX_STORAGE_MB}MB)`);
+    return;
+  }
+
+  try {
+    await chrome.storage.local.set({
+      [STORAGE_KEY]: {
+        originalImage: originalBase64,
+        resultBase64: state.resultBase64,
+        timestamp: Date.now(),
+      }
+    });
+    console.log(`AlphaDrop: Session persisted (${totalSize.toFixed(1)}MB)`);
+  } catch (error) {
+    console.error("AlphaDrop: Failed to persist session:", error);
+  }
+}
+
+/**
+ * Load persisted session from chrome.storage.local
+ */
+async function loadPersistedState() {
+  try {
+    const stored = await chrome.storage.local.get(STORAGE_KEY);
+    const session = stored[STORAGE_KEY];
+
+    if (!session) return;
+
+    // Check if session is less than 24 hours old
+    const MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
+    if (Date.now() - session.timestamp > MAX_AGE) {
+      await clearPersistedState();
+      return;
+    }
+
+    // Restore the session
+    state.imageUrl = session.originalImage;
+    state.resultBase64 = session.resultBase64;
+
+    // Update UI
+    elements.emptyState.classList.add("hidden");
+    elements.mainContent.classList.remove("hidden");
+    elements.originalImage.src = session.originalImage;
+    elements.resultImage.src = `data:image/png;base64,${session.resultBase64}`;
+    elements.resultCard.classList.remove("hidden");
+    elements.downloadBtn.classList.remove("hidden");
+    elements.refineBtn.classList.remove("hidden");
+
+    // Restore refinement data
+    await storeOriginalResult(session.resultBase64);
+
+    console.log("AlphaDrop: Session restored");
+  } catch (error) {
+    console.error("AlphaDrop: Failed to load persisted session:", error);
+  }
+}
+
+/**
+ * Clear persisted session
+ */
+async function clearPersistedState() {
+  try {
+    await chrome.storage.local.remove(STORAGE_KEY);
+  } catch (error) {
+    console.error("AlphaDrop: Failed to clear persisted session:", error);
+  }
+}
 
 // Listen for progress updates from background script
 function setupProgressListener() {
@@ -238,6 +331,9 @@ async function loadImage(url) {
   state.resultBase64 = null;
   state.originalResultData = null;
 
+  // Clear old persisted session when loading new image
+  await clearPersistedState();
+
   elements.emptyState.classList.add("hidden");
   elements.mainContent.classList.remove("hidden");
 
@@ -309,6 +405,9 @@ async function handleProcess() {
     elements.resultCard.classList.remove("hidden");
     elements.downloadBtn.classList.remove("hidden");
     elements.refineBtn.classList.remove("hidden");
+
+    // Persist session for next popup open
+    await savePersistedState();
   } catch (error) {
     showError(error.message);
   } finally {

@@ -345,9 +345,30 @@ body {
   position: relative;
 }
 
-.method-pill > svg {
+.method-pill > svg,
+.method-pill .alpha-symbol {
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0.6;
   transition: opacity var(--transition);
+}
+
+.method-pill .alpha-symbol {
+  font-size: 16px;
+  font-weight: 600;
+  font-style: italic;
+  line-height: 1;
+}
+
+.method-pill:hover .alpha-symbol {
+  opacity: 0.9;
+}
+
+.method-pill.active .alpha-symbol {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .method-pill .pill-label {
@@ -725,6 +746,8 @@ input[type="range"]:focus::-webkit-slider-thumb {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Padding to prevent close button and label from being cut off */
+  padding: 50px 16px;
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -740,8 +763,8 @@ input[type="range"]:focus::-webkit-slider-thumb {
 
 .lightbox-content {
   position: relative;
-  max-width: 90vw;
-  max-height: 90vh;
+  max-width: 100%;
+  max-height: 100%;
   transform: scale(0.95);
   transition: transform var(--transition-spring);
 }
@@ -752,7 +775,7 @@ input[type="range"]:focus::-webkit-slider-thumb {
 
 .lightbox-content img {
   max-width: 100%;
-  max-height: 90vh;
+  max-height: calc(100vh - 100px);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-elevated);
   object-fit: contain;
