@@ -7,92 +7,209 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <div class="container">
-      <header>
-        <h1>AlphaDrop</h1>
-        <span id="status-indicator" class="status-dot"></span>
+    <div class="app">
+      <!-- Header -->
+      <header class="header">
+        <div class="logo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+          <span>AlphaDrop</span>
+        </div>
+        <div id="status-dot" class="status-dot" title="Checking API..."></div>
       </header>
 
-      <div id="no-image" class="message">
-        <p>Right-click an image and select "Remove Background" to get started.</p>
+      <!-- Empty State -->
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+        </div>
+        <p>Right-click any image and select</p>
+        <p class="hint">"Remove Background"</p>
       </div>
 
-      <div id="main-content" class="hidden">
-        <section class="preview-section">
-          <div class="preview-container">
-            <div class="preview-box">
-              <label>Original</label>
-              <div class="image-wrapper">
-                <img id="original-image" alt="Original" />
-              </div>
-            </div>
-            <div class="preview-box">
-              <label>Result</label>
-              <div class="image-wrapper checkerboard">
-                <img id="result-image" alt="Result" />
-                <div id="loading-overlay" class="hidden">
-                  <div class="spinner"></div>
-                  <span>Processing...</span>
-                </div>
-              </div>
+      <!-- Main Content -->
+      <div id="main-content" class="main-content hidden">
+        <!-- Preview Area -->
+        <div class="preview-area">
+          <div class="preview-card">
+            <span class="preview-label">Original</span>
+            <div class="preview-frame" id="original-frame">
+              <img id="original-image" alt="Original" />
+              <button class="expand-btn" data-target="original" title="Enlarge">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+                </svg>
+              </button>
             </div>
           </div>
-        </section>
 
-        <section class="controls-section">
-          <div class="method-select">
-            <label for="method">Method:</label>
-            <select id="method">
-              <option value="auto">Auto (Recommended)</option>
-              <option value="matting">AI Matting</option>
-              <option value="segmentation">AI Segmentation</option>
-              <option value="color">Color-Based</option>
-            </select>
+          <div id="result-card" class="preview-card hidden">
+            <span class="preview-label">Result</span>
+            <div class="preview-frame" id="result-frame">
+              <img id="result-image" alt="Result" />
+
+              <!-- Expand Button -->
+              <button class="expand-btn" data-target="result" title="Enlarge">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+                </svg>
+              </button>
+
+              <!-- Magic Wand Button (appears after processing) -->
+              <button id="refine-btn" class="refine-btn hidden" title="Edge Refinement">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M15 4V2"/>
+                  <path d="M15 16v-2"/>
+                  <path d="M8 9h2"/>
+                  <path d="M20 9h2"/>
+                  <path d="M17.8 11.8L19 13"/>
+                  <path d="M15 9h0"/>
+                  <path d="M17.8 6.2L19 5"/>
+                  <path d="M3 21l9-9"/>
+                  <path d="M12.2 6.2L11 5"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
-          <div class="buttons">
-            <button id="process-btn" class="btn primary">Remove Background</button>
-            <button id="download-btn" class="btn secondary" disabled>Download PNG</button>
+          <!-- Loading Spinner (shows during processing) -->
+          <div id="loading-card" class="preview-card hidden">
+            <span class="preview-label">Processing</span>
+            <div class="preview-frame">
+              <div class="loading-spinner">
+                <div class="spinner"></div>
+              </div>
+            </div>
           </div>
-        </section>
+        </div>
 
-        <section id="refinement-section" class="refinement-section hidden">
-          <div class="refinement-header">
-            <span>Edge Refinement</span>
-            <button id="reset-refinement" class="btn-small">Reset</button>
+        <!-- Controls Area (switches between main controls and refinement) -->
+        <div id="controls-area" class="controls-area">
+          <!-- Main Controls -->
+          <div id="main-controls" class="controls-view">
+            <!-- Method Selection Pills -->
+            <div class="method-section">
+              <div class="method-pills" role="radiogroup" aria-label="Removal method">
+                <button class="method-pill active" data-method="segmentation">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7"/>
+                    <rect x="14" y="3" width="7" height="7"/>
+                    <rect x="14" y="14" width="7" height="7"/>
+                    <rect x="3" y="14" width="7" height="7"/>
+                  </svg>
+                  <span class="pill-label">Object</span>
+                  <span class="pill-info" data-tooltip="AI Segmentation - Best for products, animals, and general objects">
+                    <img src="../icons/info.svg" alt="info" />
+                  </span>
+                </button>
+                <button class="method-pill" data-method="matting">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                    <circle cx="12" cy="7" r="4"/>
+                  </svg>
+                  <span class="pill-label">Portrait</span>
+                  <span class="pill-info" data-tooltip="AI Matting - Best for photos of people, preserves fine details like hair">
+                    <img src="../icons/info.svg" alt="info" />
+                  </span>
+                </button>
+                <button class="method-pill" data-method="color">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 2a10 10 0 0 1 0 20"/>
+                  </svg>
+                  <span class="pill-label">Color</span>
+                  <span class="pill-info pill-info-left" data-tooltip="Color-based removal - Best for solid color backgrounds (green screen, white, etc.)">
+                    <img src="../icons/info.svg" alt="info" />
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Action Button -->
+            <button id="process-btn" class="process-btn">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="5" y="2" width="14" height="20" rx="2"/>
+              </svg>
+              Remove Background
+            </button>
+
+            <!-- Download Button (appears after processing) -->
+            <button id="download-btn" class="download-btn hidden">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download
+            </button>
           </div>
 
-          <div class="slider-group">
-            <label for="feather-slider">
-              Feather: <span id="feather-value">0</span>px
-            </label>
-            <input type="range" id="feather-slider" min="0" max="10" value="0" step="1" />
+          <!-- Refinement Controls (hidden by default) -->
+          <div id="refinement-controls" class="controls-view hidden">
+            <div class="refinement-header">
+              <span class="refinement-title">Edge Refinement</span>
+              <button id="reset-refinement" class="reset-link">Reset</button>
+            </div>
+
+            <div class="slider-control">
+              <div class="slider-header">
+                <label>Feather</label>
+                <span id="feather-value" class="slider-value">0px</span>
+              </div>
+              <input type="range" id="feather-slider" min="0" max="10" value="0" />
+            </div>
+
+            <div class="slider-control">
+              <div class="slider-header">
+                <label>Edge Adjust</label>
+                <span id="edge-adjust-value" class="slider-value">0px</span>
+              </div>
+              <input type="range" id="edge-adjust-slider" min="-5" max="5" value="0" />
+            </div>
+
+            <div class="slider-control">
+              <div class="slider-header">
+                <label>Smooth</label>
+                <span id="smooth-value" class="slider-value">0</span>
+              </div>
+              <input type="range" id="smooth-slider" min="0" max="10" value="0" />
+            </div>
+
+            <!-- Download in refinement view -->
+            <button id="download-btn-refine" class="download-btn">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download
+            </button>
           </div>
+        </div>
 
-          <div class="slider-group">
-            <label for="edge-adjust-slider">
-              Edge Adjust: <span id="edge-adjust-value">0</span>px
-            </label>
-            <input type="range" id="edge-adjust-slider" min="-5" max="5" value="0" step="1" />
-          </div>
+        <!-- Error Message -->
+        <div id="error-message" class="error-message hidden"></div>
+      </div>
 
-          <div class="slider-group">
-            <label for="smooth-slider">
-              Smooth: <span id="smooth-value">0</span>
-            </label>
-            <input type="range" id="smooth-slider" min="0" max="10" value="0" step="1" />
-          </div>
-        </section>
-
-        <section id="info-section" class="info-section hidden">
-          <div id="method-info"></div>
-          <div id="confidence-info"></div>
-          <div id="analysis-info"></div>
-        </section>
-
-        <section id="error-section" class="error-section hidden">
-          <p id="error-message"></p>
-        </section>
+      <!-- Image Lightbox -->
+      <div id="lightbox" class="lightbox">
+        <div id="lightbox-content" class="lightbox-content">
+          <button id="lightbox-close" class="lightbox-close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+          <img id="lightbox-image" alt="Enlarged view" />
+          <span id="lightbox-label" class="lightbox-label"></span>
+        </div>
       </div>
     </div>
 

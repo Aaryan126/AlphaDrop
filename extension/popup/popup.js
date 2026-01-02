@@ -1,27 +1,29 @@
 /**
- * AlphaDrop - Popup UI Logic
- * Handles UI rendering and user interactions.
+ * AlphaDrop - Modern Popup UI
  */
 
-// DOM elements
+// DOM Elements
 const elements = {
-  noImage: document.getElementById("no-image"),
+  app: document.querySelector(".app"),
+  emptyState: document.getElementById("empty-state"),
   mainContent: document.getElementById("main-content"),
   originalImage: document.getElementById("original-image"),
   resultImage: document.getElementById("result-image"),
-  loadingOverlay: document.getElementById("loading-overlay"),
-  methodSelect: document.getElementById("method"),
+  originalFrame: document.getElementById("original-frame"),
+  resultFrame: document.getElementById("result-frame"),
+  resultCard: document.getElementById("result-card"),
+  loadingCard: document.getElementById("loading-card"),
+  statusDot: document.getElementById("status-dot"),
+  methodPills: document.querySelectorAll(".method-pill"),
   processBtn: document.getElementById("process-btn"),
   downloadBtn: document.getElementById("download-btn"),
-  statusIndicator: document.getElementById("status-indicator"),
-  infoSection: document.getElementById("info-section"),
-  methodInfo: document.getElementById("method-info"),
-  confidenceInfo: document.getElementById("confidence-info"),
-  analysisInfo: document.getElementById("analysis-info"),
-  errorSection: document.getElementById("error-section"),
+  downloadBtnRefine: document.getElementById("download-btn-refine"),
+  refineBtn: document.getElementById("refine-btn"),
+  // Inline controls switching
+  mainControls: document.getElementById("main-controls"),
+  refinementControls: document.getElementById("refinement-controls"),
   errorMessage: document.getElementById("error-message"),
-  // Edge refinement elements
-  refinementSection: document.getElementById("refinement-section"),
+  // Sliders
   featherSlider: document.getElementById("feather-slider"),
   featherValue: document.getElementById("feather-value"),
   edgeAdjustSlider: document.getElementById("edge-adjust-slider"),
@@ -29,92 +31,120 @@ const elements = {
   smoothSlider: document.getElementById("smooth-slider"),
   smoothValue: document.getElementById("smooth-value"),
   resetRefinement: document.getElementById("reset-refinement"),
+  // Lightbox
+  lightbox: document.getElementById("lightbox"),
+  lightboxContent: document.getElementById("lightbox-content"),
+  lightboxImage: document.getElementById("lightbox-image"),
+  lightboxLabel: document.getElementById("lightbox-label"),
+  lightboxClose: document.getElementById("lightbox-close"),
+  expandBtns: document.querySelectorAll(".expand-btn"),
 };
 
 // State
 let state = {
   imageUrl: null,
   resultBase64: null,
-  originalResultData: null, // Store original result for refinement
+  originalResultData: null,
+  selectedMethod: "segmentation",
   isProcessing: false,
+  isRefinementView: false,
 };
 
-// Hidden canvas for image processing
+// Canvas for image processing
 const processingCanvas = document.createElement("canvas");
 const processingCtx = processingCanvas.getContext("2d", { willReadFrequently: true });
 
-// Initialize popup
+// Initialize
 document.addEventListener("DOMContentLoaded", async () => {
-  console.log("AlphaDrop: Popup initialized");
-
-  // Check API status
   await checkApiStatus();
-
-  // Check for pending image from context menu
-  const stored = await chrome.storage.local.get("pendingImage");
-  if (stored.pendingImage) {
-    const { url, timestamp } = stored.pendingImage;
-
-    // Only use if recent (within 30 seconds)
-    if (Date.now() - timestamp < 30000) {
-      await loadImage(url);
-    }
-
-    // Clear the pending image
-    await chrome.storage.local.remove("pendingImage");
-  }
-
-  // Set up event listeners
-  elements.processBtn.addEventListener("click", handleProcess);
-  elements.downloadBtn.addEventListener("click", handleDownload);
-
-  // Edge refinement event listeners
-  elements.featherSlider.addEventListener("input", handleRefinementChange);
-  elements.edgeAdjustSlider.addEventListener("input", handleRefinementChange);
-  elements.smoothSlider.addEventListener("input", handleRefinementChange);
-  elements.resetRefinement.addEventListener("click", resetRefinementSliders);
+  await loadPendingImage();
+  setupEventListeners();
 });
 
-/**
- * Check API health status.
- */
+function setupEventListeners() {
+  // Method pill selection
+  elements.methodPills.forEach((pill) => {
+    pill.addEventListener("click", () => selectMethod(pill.dataset.method));
+  });
+
+  // Main actions
+  elements.processBtn.addEventListener("click", handleProcess);
+  elements.downloadBtn.addEventListener("click", handleDownload);
+  elements.downloadBtnRefine.addEventListener("click", handleDownload);
+
+  // Refinement view toggle (click to toggle between views)
+  elements.refineBtn.addEventListener("click", toggleRefinementView);
+  elements.resetRefinement.addEventListener("click", resetRefinement);
+
+  // Sliders - use input for real-time smooth updates
+  const sliders = [elements.featherSlider, elements.edgeAdjustSlider, elements.smoothSlider];
+  sliders.forEach(slider => {
+    slider.addEventListener("input", handleSliderChange);
+    // Initialize slider progress
+    updateSliderProgress(slider);
+  });
+
+  // Lightbox
+  elements.expandBtns.forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openLightbox(btn.dataset.target);
+    });
+  });
+  elements.lightboxClose.addEventListener("click", closeLightbox);
+  elements.lightbox.addEventListener("click", (e) => {
+    if (e.target === elements.lightbox) closeLightbox();
+  });
+
+  // Close lightbox with Escape key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (elements.lightbox.classList.contains("active")) {
+        closeLightbox();
+      }
+    }
+  });
+}
+
+// API Status
 async function checkApiStatus() {
   try {
     const response = await chrome.runtime.sendMessage({ type: "CHECK_API" });
     if (response.success) {
-      elements.statusIndicator.classList.add("connected");
-      elements.statusIndicator.classList.remove("error");
-      elements.statusIndicator.title = "API connected";
+      elements.statusDot.classList.add("connected");
+      elements.statusDot.title = "API Connected";
     } else {
-      throw new Error(response.error);
+      throw new Error();
     }
-  } catch (error) {
-    console.error("AlphaDrop: API check failed:", error);
-    elements.statusIndicator.classList.add("error");
-    elements.statusIndicator.classList.remove("connected");
-    elements.statusIndicator.title = "API not available";
+  } catch {
+    elements.statusDot.classList.add("error");
+    elements.statusDot.title = "API Unavailable";
   }
 }
 
-/**
- * Load image from URL.
- */
-async function loadImage(url) {
-  console.log("AlphaDrop: Loading image:", url);
+// Load pending image from context menu
+async function loadPendingImage() {
+  const stored = await chrome.storage.local.get("pendingImage");
+  if (stored.pendingImage) {
+    const { url, timestamp } = stored.pendingImage;
+    if (Date.now() - timestamp < 30000) {
+      await loadImage(url);
+    }
+    await chrome.storage.local.remove("pendingImage");
+  }
+}
 
+// Load image
+async function loadImage(url) {
   state.imageUrl = url;
   state.resultBase64 = null;
+  state.originalResultData = null;
 
-  // Show main content
-  elements.noImage.classList.add("hidden");
+  elements.emptyState.classList.add("hidden");
   elements.mainContent.classList.remove("hidden");
 
-  // Try to load the image directly first
   elements.originalImage.src = url;
-
-  // Handle CORS issues by fetching through background script
   elements.originalImage.onerror = async () => {
-    console.log("AlphaDrop: Direct load failed, fetching via background");
     try {
       const response = await chrome.runtime.sendMessage({
         type: "FETCH_IMAGE",
@@ -123,43 +153,44 @@ async function loadImage(url) {
       if (response.success) {
         elements.originalImage.src = response.data;
       }
-    } catch (error) {
-      console.error("AlphaDrop: Failed to fetch image:", error);
-      showError("Failed to load image. The image may be protected.");
+    } catch {
+      showError("Failed to load image");
     }
   };
 
-  // Reset result
+  // Reset UI
   elements.resultImage.src = "";
-  elements.downloadBtn.disabled = true;
-  hideInfo();
+  elements.resultCard.classList.add("hidden");
+  elements.loadingCard.classList.add("hidden");
+  elements.downloadBtn.classList.add("hidden");
+  elements.refineBtn.classList.add("hidden");
   hideError();
-
-  // Hide refinement section
-  elements.refinementSection.classList.add("hidden");
-  state.originalResultData = null;
+  showMainView();
 }
 
-/**
- * Handle process button click.
- */
+// Method selection
+function selectMethod(method) {
+  state.selectedMethod = method;
+  elements.methodPills.forEach((pill) => {
+    pill.classList.toggle("active", pill.dataset.method === method);
+  });
+}
+
+// Process image
 async function handleProcess() {
   if (state.isProcessing || !state.imageUrl) return;
 
-  const method = elements.methodSelect.value;
-  console.log("AlphaDrop: Processing with method:", method);
-
   state.isProcessing = true;
   elements.processBtn.disabled = true;
-  elements.loadingOverlay.classList.remove("hidden");
+  elements.resultCard.classList.add("hidden");
+  elements.loadingCard.classList.remove("hidden");
   hideError();
-  hideInfo();
 
   try {
     const response = await chrome.runtime.sendMessage({
       type: "PROCESS_IMAGE",
       imageUrl: state.imageUrl,
-      method: method,
+      method: state.selectedMethod,
     });
 
     if (!response.success) {
@@ -171,34 +202,27 @@ async function handleProcess() {
     // Display result
     state.resultBase64 = result.image;
     elements.resultImage.src = `data:image/png;base64,${result.image}`;
-    elements.downloadBtn.disabled = false;
 
-    // Store original result for refinement
+    // Store for refinement
     await storeOriginalResult(result.image);
 
-    // Show refinement controls and reset sliders
-    resetRefinementSliders();
-    elements.refinementSection.classList.remove("hidden");
-
-    // Show info
-    showInfo(result);
+    // Show result card and controls
+    elements.resultCard.classList.remove("hidden");
+    elements.downloadBtn.classList.remove("hidden");
+    elements.refineBtn.classList.remove("hidden");
   } catch (error) {
-    console.error("AlphaDrop: Processing error:", error);
     showError(error.message);
   } finally {
     state.isProcessing = false;
     elements.processBtn.disabled = false;
-    elements.loadingOverlay.classList.add("hidden");
+    elements.loadingCard.classList.add("hidden");
   }
 }
 
-/**
- * Handle download button click.
- */
+// Download
 function handleDownload() {
   if (!state.resultBase64) return;
 
-  // Get current refined image from canvas or use stored base64
   let dataUrl;
   if (processingCanvas.width > 0 && processingCanvas.height > 0) {
     dataUrl = processingCanvas.toDataURL("image/png");
@@ -206,88 +230,59 @@ function handleDownload() {
     dataUrl = `data:image/png;base64,${state.resultBase64}`;
   }
 
-  // Create download link
   const link = document.createElement("a");
   link.href = dataUrl;
 
-  // Generate filename from original URL or use default
-  let filename = "background-removed.png";
+  let filename = "alphadrop-result.png";
   try {
     const url = new URL(state.imageUrl);
-    const pathParts = url.pathname.split("/");
-    const originalName = pathParts[pathParts.length - 1];
-    if (originalName) {
-      const nameParts = originalName.split(".");
-      nameParts.pop(); // Remove extension
-      filename = `${nameParts.join(".")}-no-bg.png`;
+    const name = url.pathname.split("/").pop();
+    if (name) {
+      filename = name.replace(/\.[^.]+$/, "") + "-no-bg.png";
     }
-  } catch (e) {
-    // Use default filename
-  }
+  } catch {}
 
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-
-  console.log("AlphaDrop: Downloaded:", filename);
 }
 
-/**
- * Show processing info.
- */
-function showInfo(result) {
-  elements.infoSection.classList.remove("hidden");
+// Error handling
+function showError(message) {
+  elements.errorMessage.textContent = message;
+  elements.errorMessage.classList.remove("hidden");
+}
 
-  const methodNames = {
-    matting: "AI Matting",
-    segmentation: "AI Segmentation",
-    color: "Color-Based",
-  };
+function hideError() {
+  elements.errorMessage.classList.add("hidden");
+}
 
-  elements.methodInfo.textContent = `Method: ${methodNames[result.method_used] || result.method_used}`;
-  elements.confidenceInfo.textContent = `Confidence: ${Math.round(result.confidence * 100)}%`;
+// ============================================
+// View Switching (Main <-> Refinement)
+// ============================================
 
-  if (result.analysis) {
-    const analysis = result.analysis;
-    const details = [];
-    if (analysis.has_face) details.push("Face detected");
-    details.push(`Entropy: ${analysis.color_entropy}`);
-    elements.analysisInfo.textContent = details.join(" | ");
+function toggleRefinementView() {
+  state.isRefinementView = !state.isRefinementView;
+
+  if (state.isRefinementView) {
+    elements.mainControls.classList.add("hidden");
+    elements.refinementControls.classList.remove("hidden");
+    elements.refineBtn.classList.add("active");
   } else {
-    elements.analysisInfo.textContent = "";
+    elements.refinementControls.classList.add("hidden");
+    elements.mainControls.classList.remove("hidden");
+    elements.refineBtn.classList.remove("active");
   }
 }
 
-/**
- * Hide info section.
- */
-function hideInfo() {
-  elements.infoSection.classList.add("hidden");
+function showMainView() {
+  state.isRefinementView = false;
+  elements.refinementControls.classList.add("hidden");
+  elements.mainControls.classList.remove("hidden");
+  elements.refineBtn.classList.remove("active");
 }
 
-/**
- * Show error message.
- */
-function showError(message) {
-  elements.errorSection.classList.remove("hidden");
-  elements.errorMessage.textContent = message;
-}
-
-/**
- * Hide error section.
- */
-function hideError() {
-  elements.errorSection.classList.add("hidden");
-}
-
-// ============================================
-// Edge Refinement Functions
-// ============================================
-
-/**
- * Store original result image data for refinement.
- */
 async function storeOriginalResult(base64) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -302,40 +297,58 @@ async function storeOriginalResult(base64) {
   });
 }
 
-/**
- * Reset refinement sliders to default values.
- */
-function resetRefinementSliders() {
+function resetRefinement() {
   elements.featherSlider.value = 0;
-  elements.featherValue.textContent = "0";
   elements.edgeAdjustSlider.value = 0;
-  elements.edgeAdjustValue.textContent = "0";
   elements.smoothSlider.value = 0;
-  elements.smoothValue.textContent = "0";
+  updateSliderValues();
 
-  // Reset to original image
+  // Update slider progress indicators
+  updateSliderProgress(elements.featherSlider);
+  updateSliderProgress(elements.edgeAdjustSlider);
+  updateSliderProgress(elements.smoothSlider);
+
   if (state.originalResultData) {
     processingCtx.putImageData(state.originalResultData, 0, 0);
     elements.resultImage.src = processingCanvas.toDataURL("image/png");
   }
 }
 
-/**
- * Handle refinement slider changes.
- */
-function handleRefinementChange() {
-  // Update value displays
-  elements.featherValue.textContent = elements.featherSlider.value;
-  elements.edgeAdjustValue.textContent = elements.edgeAdjustSlider.value;
-  elements.smoothValue.textContent = elements.smoothSlider.value;
+// Debounce for smooth slider updates
+let refinementTimeout = null;
 
-  // Apply refinements
-  applyRefinements();
+function handleSliderChange(e) {
+  updateSliderValues();
+  updateSliderProgress(e.target);
+
+  // Debounce the heavy image processing for smoother feel
+  if (refinementTimeout) {
+    cancelAnimationFrame(refinementTimeout);
+  }
+  refinementTimeout = requestAnimationFrame(() => {
+    applyRefinements();
+  });
 }
 
-/**
- * Apply all refinement effects to the image.
- */
+function updateSliderProgress(slider) {
+  const min = parseFloat(slider.min);
+  const max = parseFloat(slider.max);
+  const value = parseFloat(slider.value);
+  const progress = ((value - min) / (max - min)) * 100;
+  slider.style.setProperty('--progress', `${progress}%`);
+}
+
+function updateSliderValues() {
+  elements.featherValue.textContent = `${elements.featherSlider.value}px`;
+  elements.edgeAdjustValue.textContent = `${elements.edgeAdjustSlider.value}px`;
+  elements.smoothValue.textContent = elements.smoothSlider.value;
+
+  // Update all slider progress indicators
+  updateSliderProgress(elements.featherSlider);
+  updateSliderProgress(elements.edgeAdjustSlider);
+  updateSliderProgress(elements.smoothSlider);
+}
+
 function applyRefinements() {
   if (!state.originalResultData) return;
 
@@ -343,61 +356,41 @@ function applyRefinements() {
   const edgeAdjust = parseInt(elements.edgeAdjustSlider.value);
   const smooth = parseInt(elements.smoothSlider.value);
 
-  // Start with original image data
   const imageData = new ImageData(
     new Uint8ClampedArray(state.originalResultData.data),
     state.originalResultData.width,
     state.originalResultData.height
   );
 
-  // Apply edge adjust first (erode/dilate)
-  if (edgeAdjust !== 0) {
-    applyEdgeAdjust(imageData, edgeAdjust);
-  }
+  if (edgeAdjust !== 0) applyEdgeAdjust(imageData, edgeAdjust);
+  if (feather > 0) applyFeather(imageData, feather);
+  if (smooth > 0) applySmooth(imageData, smooth);
 
-  // Apply feather (blur on alpha edges)
-  if (feather > 0) {
-    applyFeather(imageData, feather);
-  }
-
-  // Apply smooth (median-like filter on alpha)
-  if (smooth > 0) {
-    applySmooth(imageData, smooth);
-  }
-
-  // Update canvas and display
   processingCtx.putImageData(imageData, 0, 0);
   elements.resultImage.src = processingCanvas.toDataURL("image/png");
 }
 
-/**
- * Apply feather effect (Gaussian blur on alpha channel edges).
- */
+// ============================================
+// Image Processing Functions
+// ============================================
+
 function applyFeather(imageData, radius) {
   const { data, width, height } = imageData;
-
-  // Create a copy of alpha channel
   const alpha = new Float32Array(width * height);
+
   for (let i = 0; i < width * height; i++) {
     alpha[i] = data[i * 4 + 3];
   }
 
-  // Find edge pixels (where alpha transitions)
   const isEdge = new Uint8Array(width * height);
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       const idx = y * width + x;
       const a = alpha[idx];
-
-      // Check if this pixel is near an edge
       if (a > 0 && a < 255) {
         isEdge[idx] = 1;
       } else {
-        // Check neighbors
-        const neighbors = [
-          alpha[idx - 1], alpha[idx + 1],
-          alpha[idx - width], alpha[idx + width]
-        ];
+        const neighbors = [alpha[idx - 1], alpha[idx + 1], alpha[idx - width], alpha[idx + width]];
         for (const n of neighbors) {
           if (Math.abs(a - n) > 10) {
             isEdge[idx] = 1;
@@ -408,27 +401,23 @@ function applyFeather(imageData, radius) {
     }
   }
 
-  // Apply box blur to alpha channel (only near edges)
   const blurred = new Float32Array(alpha);
-  const kernelSize = radius * 2 + 1;
-
   for (let y = radius; y < height - radius; y++) {
     for (let x = radius; x < width - radius; x++) {
       const idx = y * width + x;
-
-      // Only blur near edges
       let nearEdge = false;
-      for (let dy = -radius; dy <= radius && !nearEdge; dy++) {
-        for (let dx = -radius; dx <= radius && !nearEdge; dx++) {
+
+      outer: for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
           if (isEdge[(y + dy) * width + (x + dx)]) {
             nearEdge = true;
+            break outer;
           }
         }
       }
 
       if (nearEdge) {
-        let sum = 0;
-        let count = 0;
+        let sum = 0, count = 0;
         for (let dy = -radius; dy <= radius; dy++) {
           for (let dx = -radius; dx <= radius; dx++) {
             sum += alpha[(y + dy) * width + (x + dx)];
@@ -440,59 +429,40 @@ function applyFeather(imageData, radius) {
     }
   }
 
-  // Write back to image data
   for (let i = 0; i < width * height; i++) {
     data[i * 4 + 3] = Math.round(blurred[i]);
   }
 }
 
-/**
- * Apply edge adjust (erode or dilate the alpha mask).
- */
 function applyEdgeAdjust(imageData, amount) {
   const { data, width, height } = imageData;
   const iterations = Math.abs(amount);
   const erode = amount < 0;
 
   for (let iter = 0; iter < iterations; iter++) {
-    // Create a copy of alpha channel
     const alpha = new Uint8Array(width * height);
     for (let i = 0; i < width * height; i++) {
       alpha[i] = data[i * 4 + 3];
     }
 
-    // Apply morphological operation
     for (let y = 1; y < height - 1; y++) {
       for (let x = 1; x < width - 1; x++) {
         const idx = y * width + x;
-
-        // Get 3x3 neighborhood
         const neighbors = [
           alpha[idx - width - 1], alpha[idx - width], alpha[idx - width + 1],
           alpha[idx - 1], alpha[idx], alpha[idx + 1],
-          alpha[idx + width - 1], alpha[idx + width], alpha[idx + width + 1]
+          alpha[idx + width - 1], alpha[idx + width], alpha[idx + width + 1],
         ];
-
-        if (erode) {
-          // Erode: use minimum of neighbors
-          data[idx * 4 + 3] = Math.min(...neighbors);
-        } else {
-          // Dilate: use maximum of neighbors
-          data[idx * 4 + 3] = Math.max(...neighbors);
-        }
+        data[idx * 4 + 3] = erode ? Math.min(...neighbors) : Math.max(...neighbors);
       }
     }
   }
 }
 
-/**
- * Apply smooth effect (removes jagged edges using median-like filter).
- */
 function applySmooth(imageData, strength) {
   const { data, width, height } = imageData;
-
-  // Create a copy of alpha channel
   const alpha = new Uint8Array(width * height);
+
   for (let i = 0; i < width * height; i++) {
     alpha[i] = data[i * 4 + 3];
   }
@@ -504,24 +474,60 @@ function applySmooth(imageData, strength) {
       const idx = y * width + x;
       const centerAlpha = alpha[idx];
 
-      // Only smooth pixels that are not fully transparent or opaque
       if (centerAlpha > 5 && centerAlpha < 250) {
-        // Collect neighborhood values
         const neighbors = [];
         for (let dy = -radius; dy <= radius; dy++) {
           for (let dx = -radius; dx <= radius; dx++) {
             neighbors.push(alpha[(y + dy) * width + (x + dx)]);
           }
         }
-
-        // Sort and take median
         neighbors.sort((a, b) => a - b);
         const median = neighbors[Math.floor(neighbors.length / 2)];
-
-        // Blend between original and median based on strength
         const blend = strength / 10;
         data[idx * 4 + 3] = Math.round(centerAlpha * (1 - blend) + median * blend);
       }
     }
   }
+}
+
+// ============================================
+// Lightbox Functions
+// ============================================
+
+function openLightbox(target) {
+  let imgSrc = "";
+  let label = "";
+  let useCheckerboard = false;
+
+  if (target === "original") {
+    imgSrc = elements.originalImage.src;
+    label = "Original Image";
+    useCheckerboard = false;
+  } else if (target === "result") {
+    // Use current result (may have refinements applied)
+    if (processingCanvas.width > 0 && processingCanvas.height > 0) {
+      imgSrc = processingCanvas.toDataURL("image/png");
+    } else {
+      imgSrc = elements.resultImage.src;
+    }
+    label = "Result";
+    useCheckerboard = true;
+  }
+
+  if (!imgSrc) return;
+
+  elements.lightboxImage.src = imgSrc;
+  elements.lightboxLabel.textContent = label;
+
+  if (useCheckerboard) {
+    elements.lightboxContent.classList.add("checkerboard");
+  } else {
+    elements.lightboxContent.classList.remove("checkerboard");
+  }
+
+  elements.lightbox.classList.add("active");
+}
+
+function closeLightbox() {
+  elements.lightbox.classList.remove("active");
 }
