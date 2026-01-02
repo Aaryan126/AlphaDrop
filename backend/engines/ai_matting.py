@@ -2,9 +2,12 @@
 AI Matting engine using rembg.
 Best for portraits and images with soft edges (hair, fur).
 """
+import logging
 import numpy as np
 from PIL import Image
 from .base import BaseEngine, EngineResult
+
+logger = logging.getLogger(__name__)
 
 # Lazy load rembg to avoid slow startup
 _rembg_session = None
@@ -14,9 +17,11 @@ def _get_session():
     """Lazily initialize rembg session."""
     global _rembg_session
     if _rembg_session is None:
+        logger.info("Loading u2net model for matting (first run may download ~170MB)...")
         from rembg import new_session
         # Use u2net for general matting, good balance of quality/speed
         _rembg_session = new_session("u2net")
+        logger.info("u2net model loaded successfully")
     return _rembg_session
 
 
@@ -52,6 +57,7 @@ class AIMattingEngine(BaseEngine):
 
             # Process with rembg
             session = _get_session()
+            logger.info(f"Running matting on image {image.shape[1]}x{image.shape[0]}...")
             result = remove(
                 pil_image,
                 session=session,
@@ -60,6 +66,7 @@ class AIMattingEngine(BaseEngine):
                 alpha_matting_background_threshold=10,
                 alpha_matting_erode_size=10,
             )
+            logger.info("Matting complete")
 
             # Convert back to numpy
             rgba = np.array(result)

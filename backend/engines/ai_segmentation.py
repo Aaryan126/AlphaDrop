@@ -2,9 +2,12 @@
 AI Segmentation engine using rembg.
 Best for general objects and product images.
 """
+import logging
 import numpy as np
 from PIL import Image
 from .base import BaseEngine, EngineResult
+
+logger = logging.getLogger(__name__)
 
 # Lazy load rembg session
 _rembg_session = None
@@ -14,9 +17,11 @@ def _get_session():
     """Lazily initialize rembg session for segmentation."""
     global _rembg_session
     if _rembg_session is None:
+        logger.info("Loading isnet-general-use model for segmentation (first run may download ~170MB)...")
         from rembg import new_session
         # Use isnet-general-use for better object segmentation
         _rembg_session = new_session("isnet-general-use")
+        logger.info("isnet-general-use model loaded successfully")
     return _rembg_session
 
 
@@ -52,11 +57,13 @@ class AISegmentationEngine(BaseEngine):
 
             # Process with rembg (no alpha matting for sharper edges)
             session = _get_session()
+            logger.info(f"Running segmentation on image {image.shape[1]}x{image.shape[0]}...")
             result = remove(
                 pil_image,
                 session=session,
                 alpha_matting=False,  # Binary mask for clean edges
             )
+            logger.info("Segmentation complete")
 
             # Convert back to numpy
             rgba = np.array(result)

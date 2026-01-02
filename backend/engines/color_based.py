@@ -16,21 +16,32 @@ class ColorBasedEngine(BaseEngine):
     1. Analyze border pixels to detect background color
     2. Create mask based on color similarity
     3. Apply morphological cleanup
-    4. Refine edges
+    4. Erode edges to remove border artifacts
+    5. Apply guided filter for edge-aware smoothing
     """
 
     name = "color"
 
-    def __init__(self, color_tolerance: int = 30, edge_blur: int = 3):
+    def __init__(
+        self,
+        color_tolerance: int = 30,
+        erode_iterations: int = 1,
+        guided_radius: int = 4,
+        guided_eps: float = 0.02,
+    ):
         """
         Initialize color-based engine.
 
         Args:
             color_tolerance: HSV tolerance for background detection
-            edge_blur: Blur kernel size for edge smoothing
+            erode_iterations: Number of erosion passes to remove border artifacts
+            guided_radius: Radius for guided filter smoothing
+            guided_eps: Regularization for guided filter (higher = smoother)
         """
         self.color_tolerance = color_tolerance
-        self.edge_blur = edge_blur
+        self.erode_iterations = erode_iterations
+        self.guided_radius = guided_radius
+        self.guided_eps = guided_eps
 
     def process(self, image: np.ndarray) -> EngineResult:
         """
@@ -53,8 +64,8 @@ class ColorBasedEngine(BaseEngine):
         # Create initial mask
         mask = self._create_color_mask(hsv, bg_color)
 
-        # Morphological cleanup
-        mask = self._cleanup_mask(mask)
+        # Morphological cleanup + edge refinement
+        mask = self._cleanup_mask(mask, image)
 
         # Calculate confidence based on mask quality
         confidence = self._calculate_confidence(mask)
@@ -116,9 +127,13 @@ class ColorBasedEngine(BaseEngine):
 
         return fg_mask
 
-    def _cleanup_mask(self, mask: np.ndarray) -> np.ndarray:
+    def _cleanup_mask(self, mask: np.ndarray, guide_image: np.ndarray) -> np.ndarray:
         """
-        Apply morphological operations to clean up the mask.
+        Apply morphological operations and edge-aware refinement.
+
+        Args:
+            mask: Binary foreground mask
+            guide_image: Original RGB image for guided filter
         """
         # Remove small noise
         kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -127,11 +142,72 @@ class ColorBasedEngine(BaseEngine):
         # Fill small holes
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_small)
 
-        # Smooth edges
-        if self.edge_blur > 0:
-            mask = cv2.GaussianBlur(mask, (self.edge_blur * 2 + 1, self.edge_blur * 2 + 1), 0)
+        # Erode to remove border artifacts (thin halo around edges)
+        if self.erode_iterations > 0:
+            kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            mask = cv2.erode(mask, kernel_erode, iterations=self.erode_iterations)
+
+        # Apply guided filter for edge-aware smoothing
+        mask = self._guided_filter(guide_image, mask)
 
         return mask
+
+    def _guided_filter(self, guide: np.ndarray, src: np.ndarray) -> np.ndarray:
+        """
+        Edge-aware guided filter that smooths the mask while respecting image edges.
+
+        Uses the original image as a guide to preserve object boundaries
+        while smoothing the alpha mask.
+
+        Args:
+            guide: RGB guide image (H, W, 3)
+            src: Grayscale mask to filter (H, W)
+
+        Returns:
+            Filtered mask with smooth, edge-aware boundaries
+        """
+        radius = self.guided_radius
+        eps = self.guided_eps
+
+        # Convert to float32 for precision
+        guide_float = guide.astype(np.float32) / 255.0
+        src_float = src.astype(np.float32) / 255.0
+
+        # Convert guide to grayscale if color
+        if len(guide_float.shape) == 3:
+            guide_gray = cv2.cvtColor(guide_float, cv2.COLOR_RGB2GRAY)
+        else:
+            guide_gray = guide_float
+
+        # Box filter helper (mean filter)
+        ksize = 2 * radius + 1
+
+        def box_filter(img):
+            return cv2.blur(img, (ksize, ksize))
+
+        # Compute local statistics
+        mean_guide = box_filter(guide_gray)
+        mean_src = box_filter(src_float)
+        mean_guide_src = box_filter(guide_gray * src_float)
+        mean_guide_guide = box_filter(guide_gray * guide_gray)
+
+        # Compute covariance and variance
+        cov_guide_src = mean_guide_src - mean_guide * mean_src
+        var_guide = mean_guide_guide - mean_guide * mean_guide
+
+        # Compute linear coefficients
+        a = cov_guide_src / (var_guide + eps)
+        b = mean_src - a * mean_guide
+
+        # Compute means of coefficients
+        mean_a = box_filter(a)
+        mean_b = box_filter(b)
+
+        # Compute output
+        output = mean_a * guide_gray + mean_b
+
+        # Convert back to uint8
+        return (output * 255).clip(0, 255).astype(np.uint8)
 
     def _calculate_confidence(self, mask: np.ndarray) -> float:
         """
