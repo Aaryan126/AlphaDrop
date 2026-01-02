@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # Image processing
     max_image_size: int = 10 * 1024 * 1024  # 10MB
-    supported_formats: list[str] = ["image/png", "image/jpeg", "image/webp"]
+    supported_formats: list[str] = ["image/png", "image/jpeg", "image/webp", "image/avif"]
 
     # Auto-selection thresholds
     entropy_threshold: float = 4.5  # Below this = uniform background

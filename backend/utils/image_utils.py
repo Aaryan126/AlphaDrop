@@ -6,6 +6,9 @@ import io
 from PIL import Image
 import numpy as np
 
+# Enable AVIF support
+import pillow_avif  # noqa: F401
+
 
 def load_image(file_bytes: bytes) -> np.ndarray:
     """
