@@ -77,15 +77,26 @@ body {
 .logo {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-weight: 600;
   font-size: 16px;
   color: var(--text-primary);
   letter-spacing: -0.02em;
 }
 
-.logo svg {
-  color: var(--accent);
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: white;
+  font-size: 16px;
+  font-weight: 700;
+  font-style: italic;
+  border-radius: 6px;
+  font-family: "Times New Roman", Georgia, serif;
 }
 
 .status-dot {
