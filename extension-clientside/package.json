@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "esbuild offscreen.js --bundle --outfile=offscreen.bundle.js --format=iife --platform=browser"
+    "build": "esbuild offscreen.js --bundle --outfile=offscreen.bundle.js --format=iife --platform=browser",
+    "package": "node build-zip.cjs",
+    "release": "npm run build && npm run package"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0"
