@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(py:*)"
+      "Bash(py:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(powershell -Command \"Compress-Archive -Path backend\\\\* -DestinationPath backend.zip -Force\")",
+      "Bash(powershell -Command \"Get-ChildItem backend.zip | Select-Object FullName, Length\")",
+      "Bash(powershell -Command \"Remove-Item backend.zip -ErrorAction SilentlyContinue; Compress-Archive -Path backend\\\\* -DestinationPath backend.zip -Force\")",
+      "WebSearch",
+      "Bash(pushd:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }

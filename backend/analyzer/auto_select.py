@@ -5,7 +5,10 @@ Uses rule-based analysis of image characteristics.
 import cv2
 import numpy as np
 from dataclasses import dataclass
-from ..config import settings
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import settings
 
 
 @dataclass

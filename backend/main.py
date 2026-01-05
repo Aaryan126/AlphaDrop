@@ -9,11 +9,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Literal, Optional
 
-from .config import settings
-from .utils import load_image, encode_png_base64
-from .engines import get_engine, ENGINE_REGISTRY
-from .analyzer import select_method
-from .progress import (
+from config import settings
+from utils import load_image, encode_png_base64
+from engines import get_engine, ENGINE_REGISTRY
+from analyzer import select_method
+from progress import (
     create_task,
     update_task,
     get_task,
@@ -113,7 +113,7 @@ def process_task_sync(task_id: str, file_bytes: bytes, method: str, filename: st
         if method == "auto":
             progress.report(TaskStatus.PROCESSING, 10, "Analyzing image...")
             try:
-                from .analyzer import select_method
+                from analyzer import select_method
                 analysis = select_method(rgb_image)
                 method = analysis.recommended_method
                 analysis_result = {

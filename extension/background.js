@@ -3,7 +3,11 @@
  * Handles context menu, API calls, and message passing.
  */
 
-const API_BASE = "http://localhost:8000";
+// Import configuration
+importScripts("config.js");
+
+// Use API_BASE from config
+const API_BASE = CONFIG.API_BASE;
 
 // Create context menu on install
 chrome.runtime.onInstalled.addListener(() => {

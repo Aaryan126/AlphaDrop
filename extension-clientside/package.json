@@ -1,0 +1,14 @@
+{
+  "name": "alphadrop-clientside",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild offscreen.js --bundle --outfile=offscreen.bundle.js --format=iife --platform=browser"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  }
+}

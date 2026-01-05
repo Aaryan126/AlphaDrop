@@ -10,6 +10,7 @@
   ],
   "host_permissions": [
     "http://localhost:8000/*",
+    "https://*.run.app/*",
     "<all_urls>"
   ],
   "background": {
