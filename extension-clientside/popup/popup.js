@@ -6,6 +6,8 @@
 const elements = {
   app: document.querySelector(".app"),
   emptyState: document.getElementById("empty-state"),
+  uploadBtn: document.getElementById("upload-btn"),
+  fileInput: document.getElementById("file-input"),
   mainContent: document.getElementById("main-content"),
   originalImage: document.getElementById("original-image"),
   resultImage: document.getElementById("result-image"),
@@ -653,6 +655,10 @@ function setupEventListeners() {
   // Size warning modal buttons
   elements.sizeWarningResize.addEventListener("click", handleSizeWarningResize);
   elements.sizeWarningProceed.addEventListener("click", handleSizeWarningProceed);
+
+  // File upload
+  elements.uploadBtn.addEventListener("click", () => elements.fileInput.click());
+  elements.fileInput.addEventListener("change", handleFileUpload);
 }
 
 // Local status - always connected since it runs locally
@@ -672,6 +678,34 @@ async function loadPendingImage() {
     }
     await chrome.storage.local.remove("pendingImage");
   }
+}
+
+/**
+ * Handle file upload from the file input.
+ */
+function handleFileUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  // Validate file type
+  if (!file.type.startsWith('image/')) {
+    showError('Please select an image file');
+    return;
+  }
+
+  // Read file as data URL
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const dataUrl = e.target.result;
+    loadImage(dataUrl);
+  };
+  reader.onerror = () => {
+    showError('Failed to read file');
+  };
+  reader.readAsDataURL(file);
+
+  // Reset input so same file can be selected again
+  event.target.value = '';
 }
 
 // Handle new pending images even while popup is open
