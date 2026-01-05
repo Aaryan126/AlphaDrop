@@ -65,6 +65,13 @@ const elements = {
   cropApply: document.getElementById("crop-apply"),
   cropBtns: document.querySelectorAll(".crop-btn"),
   cropHandles: document.querySelectorAll(".crop-handle"),
+  // Size warning modal
+  sizeWarningModal: document.getElementById("size-warning-modal"),
+  sizeWarningInfo: document.getElementById("size-warning-info"),
+  sizeWarningDetails: document.getElementById("size-warning-details"),
+  sizeWarningResize: document.getElementById("size-warning-resize"),
+  sizeWarningProceed: document.getElementById("size-warning-proceed"),
+  sizeWarningHardLimit: document.getElementById("size-warning-hard-limit"),
 };
 
 // State
@@ -101,6 +108,146 @@ const processingCtx = processingCanvas.getContext("2d", { willReadFrequently: tr
 // Persistence constants
 const STORAGE_KEY = "persistedSessionLocal";
 const MAX_STORAGE_MB = 4;
+
+// Image size limits (in megapixels)
+const IMAGE_SIZE_WARNING_MP = 4;      // Show warning above 4MP (2000×2000)
+const IMAGE_SIZE_RECOMMEND_RESIZE_MP = 16; // Strongly recommend resize above 16MP (4K)
+const IMAGE_SIZE_HARD_LIMIT_MP = 25;  // Hard limit at 25MP (~5000×5000)
+const RESIZE_TARGET_MP = 4;           // Resize to 4MP when user chooses resize
+
+// Size warning state
+let pendingSizeWarningImage = null;
+
+/**
+ * Check image size and return warning level.
+ * @returns {null | 'warning' | 'recommend' | 'hardlimit'}
+ */
+function checkImageSize(width, height) {
+  const megapixels = (width * height) / 1_000_000;
+
+  if (megapixels > IMAGE_SIZE_HARD_LIMIT_MP) {
+    return 'hardlimit';
+  } else if (megapixels > IMAGE_SIZE_RECOMMEND_RESIZE_MP) {
+    return 'recommend';
+  } else if (megapixels > IMAGE_SIZE_WARNING_MP) {
+    return 'warning';
+  }
+  return null;
+}
+
+/**
+ * Show the size warning modal with appropriate messaging.
+ */
+function showSizeWarning(width, height, imageDataUrl) {
+  const megapixels = (width * height) / 1_000_000;
+  const level = checkImageSize(width, height);
+
+  pendingSizeWarningImage = imageDataUrl;
+
+  // Set info text
+  elements.sizeWarningInfo.textContent =
+    `Image size: ${width.toLocaleString()} × ${height.toLocaleString()} (${megapixels.toFixed(1)} MP)`;
+
+  // Set details and button states based on level
+  if (level === 'hardlimit') {
+    elements.sizeWarningDetails.textContent =
+      `Maximum supported size is ${IMAGE_SIZE_HARD_LIMIT_MP} MP. Please resize to continue.`;
+    elements.sizeWarningProceed.classList.add('hidden');
+    elements.sizeWarningHardLimit.classList.remove('hidden');
+  } else if (level === 'recommend') {
+    elements.sizeWarningDetails.textContent =
+      `Images above ${IMAGE_SIZE_RECOMMEND_RESIZE_MP} MP may process slowly or fail. Resizing is strongly recommended.`;
+    elements.sizeWarningProceed.classList.remove('hidden');
+    elements.sizeWarningHardLimit.classList.add('hidden');
+  } else {
+    elements.sizeWarningDetails.textContent =
+      `Large images may take longer to process. Resizing can improve performance.`;
+    elements.sizeWarningProceed.classList.remove('hidden');
+    elements.sizeWarningHardLimit.classList.add('hidden');
+  }
+
+  elements.sizeWarningModal.classList.add('active');
+}
+
+/**
+ * Hide the size warning modal.
+ */
+function hideSizeWarning() {
+  elements.sizeWarningModal.classList.remove('active');
+  pendingSizeWarningImage = null;
+}
+
+/**
+ * Resize an image to target megapixels while maintaining aspect ratio.
+ * @returns {Promise<string>} Resized image as data URL
+ */
+function resizeImage(imageDataUrl, targetMP = RESIZE_TARGET_MP) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const width = img.width;
+      const height = img.height;
+      const currentMP = (width * height) / 1_000_000;
+
+      // Calculate scale factor to reach target MP
+      const scale = Math.sqrt(targetMP / currentMP);
+      const newWidth = Math.round(width * scale);
+      const newHeight = Math.round(height * scale);
+
+      // Create canvas and resize
+      const canvas = document.createElement('canvas');
+      canvas.width = newWidth;
+      canvas.height = newHeight;
+      const ctx = canvas.getContext('2d');
+
+      // Use high-quality image smoothing
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
+      ctx.drawImage(img, 0, 0, newWidth, newHeight);
+
+      // Return as PNG to preserve quality
+      const resizedDataUrl = canvas.toDataURL('image/png');
+
+      console.log(`AlphaDrop: Resized image from ${width}×${height} to ${newWidth}×${newHeight}`);
+      resolve(resizedDataUrl);
+    };
+    img.onerror = () => reject(new Error('Failed to load image for resizing'));
+    img.src = imageDataUrl;
+  });
+}
+
+/**
+ * Handle resize button click in warning modal.
+ */
+async function handleSizeWarningResize() {
+  if (!pendingSizeWarningImage) return;
+
+  try {
+    const resizedDataUrl = await resizeImage(pendingSizeWarningImage);
+    hideSizeWarning();
+
+    // Continue loading with resized image
+    await continueLoadImage(resizedDataUrl);
+  } catch (error) {
+    console.error('AlphaDrop: Failed to resize image:', error);
+    showError('Failed to resize image');
+    hideSizeWarning();
+  }
+}
+
+/**
+ * Handle proceed button click in warning modal.
+ */
+async function handleSizeWarningProceed() {
+  if (!pendingSizeWarningImage) return;
+
+  const imageDataUrl = pendingSizeWarningImage;
+  hideSizeWarning();
+
+  // Continue loading with original image
+  await continueLoadImage(imageDataUrl);
+}
 
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
@@ -497,8 +644,15 @@ function setupEventListeners() {
       if (elements.lightbox.classList.contains("active")) {
         closeLightbox();
       }
+      if (elements.sizeWarningModal.classList.contains("active")) {
+        hideSizeWarning();
+      }
     }
   });
+
+  // Size warning modal buttons
+  elements.sizeWarningResize.addEventListener("click", handleSizeWarningResize);
+  elements.sizeWarningProceed.addEventListener("click", handleSizeWarningProceed);
 }
 
 // Local status - always connected since it runs locally
@@ -547,7 +701,58 @@ async function loadImage(url) {
     stopProgressAnimation();
   }
 
-  state.imageUrl = url;
+  // Close any open size warning modal
+  hideSizeWarning();
+
+  // First, fetch the image to check its dimensions
+  let imageDataUrl = url;
+
+  // If it's not already a data URL, fetch it
+  if (!url.startsWith('data:')) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "FETCH_IMAGE",
+        imageUrl: url,
+      });
+      if (response.success) {
+        imageDataUrl = response.data;
+      } else {
+        showError("Failed to load image");
+        return;
+      }
+    } catch {
+      showError("Failed to load image");
+      return;
+    }
+  }
+
+  // Load image to check dimensions
+  const img = new Image();
+  img.onload = () => {
+    const width = img.width;
+    const height = img.height;
+    const sizeLevel = checkImageSize(width, height);
+
+    if (sizeLevel) {
+      // Show size warning modal
+      showSizeWarning(width, height, imageDataUrl);
+    } else {
+      // No warning needed, continue loading
+      continueLoadImage(imageDataUrl);
+    }
+  };
+  img.onerror = () => {
+    showError("Failed to load image");
+  };
+  img.src = imageDataUrl;
+}
+
+/**
+ * Continue loading the image after size check has passed.
+ * Called directly or after user approves size warning.
+ */
+async function continueLoadImage(imageDataUrl) {
+  state.imageUrl = imageDataUrl;
   state.resultBase64 = null;
   state.originalResultData = null;
 
@@ -556,20 +761,7 @@ async function loadImage(url) {
   elements.emptyState.classList.add("hidden");
   elements.mainContent.classList.remove("hidden");
 
-  elements.originalImage.src = url;
-  elements.originalImage.onerror = async () => {
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: "FETCH_IMAGE",
-        imageUrl: url,
-      });
-      if (response.success) {
-        elements.originalImage.src = response.data;
-      }
-    } catch {
-      showError("Failed to load image");
-    }
-  };
+  elements.originalImage.src = imageDataUrl;
 
   elements.resultImage.src = "";
   elements.resultCard.classList.add("hidden");

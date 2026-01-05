@@ -48821,6 +48821,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
   __webpack_exports__env.useBrowserCache = true;
   __webpack_exports__env.backends.onnx.wasm.proxy = false;
   __webpack_exports__env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL("/");
+  __webpack_exports__env.backends.onnx.logLevel = "error";
   var model = null;
   var processor = null;
   async function loadModel(sendProgress) {
@@ -49042,6 +49043,209 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     }
     return result;
   }
+  function defringe(imageData, width, height, searchRadius = 10, alphaLow = 5, alphaHigh = 250) {
+    const data = imageData.data;
+    const size = width * height;
+    const isForeground = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      if (data[i * 4 + 3] >= alphaHigh) {
+        isForeground[i] = 1;
+      }
+    }
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const alpha = data[idx * 4 + 3];
+        if (alpha <= alphaLow || alpha >= alphaHigh)
+          continue;
+        let bestDist = Infinity;
+        let bestR = data[idx * 4];
+        let bestG = data[idx * 4 + 1];
+        let bestB = data[idx * 4 + 2];
+        let found = false;
+        for (let r = 1; r <= searchRadius && !found; r++) {
+          for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+              if (Math.abs(dx) !== r && Math.abs(dy) !== r)
+                continue;
+              const ny = y + dy;
+              const nx = x + dx;
+              if (ny < 0 || ny >= height || nx < 0 || nx >= width)
+                continue;
+              const nIdx = ny * width + nx;
+              if (isForeground[nIdx]) {
+                const dist = dx * dx + dy * dy;
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  bestR = data[nIdx * 4];
+                  bestG = data[nIdx * 4 + 1];
+                  bestB = data[nIdx * 4 + 2];
+                  found = true;
+                }
+              }
+            }
+          }
+        }
+        if (!found) {
+          let sumR = 0, sumG = 0, sumB = 0, sumWeight = 0;
+          for (let dy = -searchRadius; dy <= searchRadius; dy++) {
+            for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+              const ny = y + dy;
+              const nx = x + dx;
+              if (ny < 0 || ny >= height || nx < 0 || nx >= width)
+                continue;
+              const nIdx = ny * width + nx;
+              const nAlpha = data[nIdx * 4 + 3];
+              if (nAlpha > alpha) {
+                const dist = Math.sqrt(dx * dx + dy * dy) + 1;
+                const weight = nAlpha / 255 / dist;
+                sumR += data[nIdx * 4] * weight;
+                sumG += data[nIdx * 4 + 1] * weight;
+                sumB += data[nIdx * 4 + 2] * weight;
+                sumWeight += weight;
+              }
+            }
+          }
+          if (sumWeight > 0) {
+            bestR = Math.round(sumR / sumWeight);
+            bestG = Math.round(sumG / sumWeight);
+            bestB = Math.round(sumB / sumWeight);
+          }
+        }
+        data[idx * 4] = bestR;
+        data[idx * 4 + 1] = bestG;
+        data[idx * 4 + 2] = bestB;
+      }
+    }
+  }
+  function binaryErosion(mask, width, height, radius, borderValue = 0) {
+    const result = new Uint8Array(mask.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (mask[idx] === 0) {
+          result[idx] = 0;
+          continue;
+        }
+        let allOnes = true;
+        for (let dy = -radius; dy <= radius && allOnes; dy++) {
+          for (let dx = -radius; dx <= radius && allOnes; dx++) {
+            const ny = y + dy;
+            const nx = x + dx;
+            if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+              if (borderValue === 0) {
+                allOnes = false;
+              }
+            } else {
+              if (mask[ny * width + nx] === 0) {
+                allOnes = false;
+              }
+            }
+          }
+        }
+        result[idx] = allOnes ? 1 : 0;
+      }
+    }
+    return result;
+  }
+  function createTrimap(mask, width, height, foregroundThreshold = 240, backgroundThreshold = 10, erodeSize = 5) {
+    const size = width * height;
+    const isForeground = new Uint8Array(size);
+    const isBackground = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      isForeground[i] = mask[i] > foregroundThreshold ? 1 : 0;
+      isBackground[i] = mask[i] < backgroundThreshold ? 1 : 0;
+    }
+    const erodedForeground = binaryErosion(isForeground, width, height, erodeSize, 0);
+    const erodedBackground = binaryErosion(isBackground, width, height, erodeSize, 1);
+    const trimap = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      if (erodedForeground[i] === 1) {
+        trimap[i] = 255;
+      } else if (erodedBackground[i] === 1) {
+        trimap[i] = 0;
+      } else {
+        trimap[i] = 128;
+      }
+    }
+    return trimap;
+  }
+  function sampleRegionColors(rgbData, trimap, width, height, maxSamples = 1e3) {
+    const size = width * height;
+    const fgColors = [];
+    const bgColors = [];
+    const fgIndices = [];
+    const bgIndices = [];
+    for (let i = 0; i < size; i++) {
+      if (trimap[i] === 255)
+        fgIndices.push(i);
+      else if (trimap[i] === 0)
+        bgIndices.push(i);
+    }
+    const fgStep = Math.max(1, Math.floor(fgIndices.length / maxSamples));
+    for (let i = 0; i < fgIndices.length; i += fgStep) {
+      const idx = fgIndices[i] * 4;
+      fgColors.push([rgbData[idx], rgbData[idx + 1], rgbData[idx + 2]]);
+    }
+    const bgStep = Math.max(1, Math.floor(bgIndices.length / maxSamples));
+    for (let i = 0; i < bgIndices.length; i += bgStep) {
+      const idx = bgIndices[i] * 4;
+      bgColors.push([rgbData[idx], rgbData[idx + 1], rgbData[idx + 2]]);
+    }
+    return { foreground: fgColors, background: bgColors };
+  }
+  function colorDistance(c1, c2) {
+    const dr = c1[0] - c2[0];
+    const dg2 = c1[1] - c2[1];
+    const db = c1[2] - c2[2];
+    return Math.sqrt(2 * dr * dr + 4 * dg2 * dg2 + 3 * db * db);
+  }
+  function minDistanceToSet(color, colorSet) {
+    let minDist = Infinity;
+    for (const c of colorSet) {
+      const dist = colorDistance(color, c);
+      if (dist < minDist)
+        minDist = dist;
+    }
+    return minDist;
+  }
+  function refineUnknownRegions(mask, trimap, rgbData, width, height, samples) {
+    const size = width * height;
+    const result = new Float32Array(mask);
+    if (samples.foreground.length < 10 || samples.background.length < 10) {
+      return result;
+    }
+    for (let i = 0; i < size; i++) {
+      if (trimap[i] !== 128)
+        continue;
+      const idx4 = i * 4;
+      const pixelColor = [rgbData[idx4], rgbData[idx4 + 1], rgbData[idx4 + 2]];
+      const distToFg = minDistanceToSet(pixelColor, samples.foreground);
+      const distToBg = minDistanceToSet(pixelColor, samples.background);
+      const totalDist = distToFg + distToBg + 1e-3;
+      const colorBasedAlpha = distToBg / totalDist;
+      const originalAlpha = mask[i];
+      const blendWeight = 0.6;
+      result[i] = originalAlpha * (1 - blendWeight) + colorBasedAlpha * blendWeight;
+      result[i] = Math.max(0, Math.min(1, result[i]));
+    }
+    return result;
+  }
+  function trimapAlphaMatting(mask, rgbData, width, height, options = {}) {
+    const {
+      foregroundThreshold = 240,
+      backgroundThreshold = 10,
+      erodeSize = 5
+    } = options;
+    const mask255 = new Uint8Array(mask.length);
+    for (let i = 0; i < mask.length; i++) {
+      mask255[i] = Math.round(mask[i] * 255);
+    }
+    const trimap = createTrimap(mask255, width, height, foregroundThreshold, backgroundThreshold, erodeSize);
+    const samples = sampleRegionColors(rgbData, trimap, width, height);
+    const refinedMask = refineUnknownRegions(mask, trimap, rgbData, width, height, samples);
+    return refinedMask;
+  }
   function bilinearUpscale(src, srcWidth, srcHeight, dstWidth, dstHeight) {
     const dst = new Float32Array(dstWidth * dstHeight);
     const xRatio = srcWidth / dstWidth;
@@ -49080,8 +49284,13 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       maskUint8[i] = Math.round(upscaledMask[i] * 255);
     }
     const guidedMask = guidedFilter(maskUint8, rgbData, imageWidth, imageHeight, 8, 1e-3);
+    const trimapRefinedMask = trimapAlphaMatting(guidedMask, rgbData, imageWidth, imageHeight, {
+      foregroundThreshold: 240,
+      backgroundThreshold: 10,
+      erodeSize: 5
+    });
     const gradients = computeGradients(rgbData, imageWidth, imageHeight);
-    const featheredMask = gradientAwareFeathering(guidedMask, gradients, uncertainty, imageWidth, imageHeight, 4);
+    const featheredMask = gradientAwareFeathering(trimapRefinedMask, gradients, uncertainty, imageWidth, imageHeight, 4);
     const finalMask = new Uint8Array(imageWidth * imageHeight);
     for (let i = 0; i < featheredMask.length; i++) {
       finalMask[i] = Math.round(Math.max(0, Math.min(1, featheredMask[i])) * 255);
@@ -49108,7 +49317,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     const imgBitmap = await createImageBitmap(await (await fetch(imageDataUrl)).blob());
     ctx.drawImage(imgBitmap, 0, 0);
     const imageData = ctx.getImageData(0, 0, image.width, image.height);
-    sendProgress("Refining edges", 70);
+    sendProgress("Refining edges", 65);
     const refinedMask = refineMask(
       rawMask,
       maskWidth,
@@ -49117,10 +49326,12 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       image.width,
       image.height
     );
-    sendProgress("Applying mask", 90);
+    sendProgress("Applying mask", 88);
     for (let i = 0; i < refinedMask.length; i++) {
       imageData.data[i * 4 + 3] = refinedMask[i];
     }
+    sendProgress("Cleaning edges", 94);
+    defringe(imageData, image.width, image.height, 10, 5, 250);
     ctx.putImageData(imageData, 0, 0);
     const blob = await canvas.convertToBlob({ type: "image/png" });
     const reader = new FileReader();
@@ -49138,7 +49349,27 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
         chrome.runtime.sendMessage({ type: "PROGRESS", key, pct }).catch(() => {
         });
       };
-      removeBackground(msg.imageData, sendProgress).then((result) => sendResponse({ success: true, data: result })).catch((e) => sendResponse({ success: false, error: e.message }));
+      removeBackground(msg.imageData, sendProgress).then(async (result) => {
+        try {
+          const stored = await chrome.storage.local.get("processingState");
+          const processingState = stored?.processingState;
+          if (processingState && processingState.status === "processing" && processingState.originalImage) {
+            const resultBase64 = result.replace(/^data:image\/png;base64,/, "");
+            await chrome.storage.local.set({
+              processingState: {
+                ...processingState,
+                resultBase64,
+                status: "completed",
+                completedAt: Date.now()
+              }
+            });
+            console.log("AlphaDrop: Result saved to storage for recovery");
+          }
+        } catch (e) {
+          console.log("AlphaDrop: Could not save result to storage:", e?.message || e);
+        }
+        sendResponse({ success: true, data: result });
+      }).catch((e) => sendResponse({ success: false, error: e?.message || "Processing failed" }));
       return true;
     }
   });

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AlphaDrop (Local)",
+  "name": "AlphaDrop",
   "version": "1.0.0",
-  "description": "Remove backgrounds from images - runs locally, no server needed",
+  "description": "AI-powered background removal that runs entirely in your browser. Fast, private, and free.",
   "permissions": ["contextMenus", "activeTab", "storage", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "background": {

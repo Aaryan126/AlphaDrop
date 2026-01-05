@@ -2,21 +2,23 @@
  * AlphaDrop - Background Service Worker (Client-Side Version)
  */
 
-let offscreenCreated = false;
-
 async function ensureOffscreen() {
-  if (offscreenCreated) return;
-  try {
-    await chrome.offscreen.createDocument({
-      url: "offscreen.html",
-      reasons: ["DOM_PARSER"],
-      justification: "Process images with ML model"
-    });
-    offscreenCreated = true;
-  } catch (e) {
-    if (!e.message.includes("already exists")) throw e;
-    offscreenCreated = true;
+  // Check if offscreen document already exists (handles service worker restart)
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [chrome.runtime.getURL("offscreen.html")]
+  });
+
+  if (existingContexts.length > 0) {
+    return; // Already exists
   }
+
+  // Create new offscreen document
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["DOM_PARSER"],
+    justification: "Process images with ML model"
+  });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
