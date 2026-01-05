@@ -77,6 +77,14 @@ let state = {
   isRefinementView: false,
 };
 
+// Request tracking for race condition handling
+let currentRequestId = 0;
+const REQUEST_TIMEOUT_MS = 120000; // 2 minute timeout
+
+// Processing state recovery
+const PROCESSING_STATE_KEY = "processingState";
+const PROCESSING_STATE_TTL_MS = 120000; // 2 minute TTL for recovery for processing
+
 // Progress animation state
 const progressState = {
   target: 0,
@@ -97,10 +105,31 @@ const MAX_STORAGE_MB = 4;
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   initLocalStatus();
-  await loadPersistedState();
-  await loadPendingImage();
+
+  // Check if there's a fresh pending image first (user just right-clicked)
+  // This takes priority over recovery - user wants to process a new image
+  const pendingCheck = await chrome.storage.local.get("pendingImage");
+  const hasFreshPendingImage = pendingCheck.pendingImage &&
+    (Date.now() - pendingCheck.pendingImage.timestamp < 5000); // Within last 5 seconds
+
+  if (hasFreshPendingImage) {
+    // User just right-clicked a new image - clear any old processing state
+    await clearProcessingState();
+    await loadPendingImage();
+  } else {
+    // Check for processing state recovery (popup closed during processing)
+    const recovered = await checkProcessingStateRecovery();
+
+    if (!recovered) {
+      // Normal startup - check for persisted session or pending image
+      await loadPersistedState();
+      await loadPendingImage();
+    }
+  }
+
   setupEventListeners();
   setupProgressListener();
+  setupPendingImageListener(); // Listen for new images while popup is open
   setupCropEventListeners();
   setupEraserEventListeners();
 });
@@ -178,11 +207,189 @@ async function clearPersistedState() {
   }
 }
 
+// ============================================
+// Processing State Recovery
+// ============================================
+
+/**
+ * Save processing state so it can be recovered if popup closes.
+ * Only saves if image is under size limit to avoid quota issues.
+ */
+async function saveProcessingState(originalImageData, requestId) {
+  const sizeInMB = originalImageData.length / 1024 / 1024;
+
+  // Skip if image is too large (keep under 3MB to leave room for result)
+  if (sizeInMB > 3) {
+    console.log(`AlphaDrop: Image too large for recovery (${sizeInMB.toFixed(1)}MB)`);
+    return false;
+  }
+
+  try {
+    await chrome.storage.local.set({
+      [PROCESSING_STATE_KEY]: {
+        originalImage: originalImageData,
+        requestId: requestId,
+        timestamp: Date.now(),
+        status: "processing"
+      }
+    });
+    console.log("AlphaDrop: Processing state saved for recovery");
+    return true;
+  } catch (error) {
+    console.error("AlphaDrop: Failed to save processing state:", error);
+    return false;
+  }
+}
+
+/**
+ * Update processing state with the result.
+ * Called when processing completes successfully.
+ */
+async function updateProcessingStateWithResult(resultBase64, requestId) {
+  try {
+    const stored = await chrome.storage.local.get(PROCESSING_STATE_KEY);
+    const processingState = stored[PROCESSING_STATE_KEY];
+
+    // Only update if this is the same request
+    if (!processingState || processingState.requestId !== requestId) {
+      return;
+    }
+
+    await chrome.storage.local.set({
+      [PROCESSING_STATE_KEY]: {
+        ...processingState,
+        resultBase64: resultBase64,
+        status: "completed",
+        completedAt: Date.now()
+      }
+    });
+    console.log("AlphaDrop: Processing result saved for recovery");
+  } catch (error) {
+    console.error("AlphaDrop: Failed to save processing result:", error);
+  }
+}
+
+/**
+ * Clear processing state after it's been used or expired.
+ */
+async function clearProcessingState() {
+  try {
+    await chrome.storage.local.remove(PROCESSING_STATE_KEY);
+  } catch (error) {
+    console.error("AlphaDrop: Failed to clear processing state:", error);
+  }
+}
+
+/**
+ * Check for and recover from a previous processing session.
+ * Returns true if state was recovered.
+ */
+async function checkProcessingStateRecovery() {
+  try {
+    const stored = await chrome.storage.local.get(PROCESSING_STATE_KEY);
+    const processingState = stored[PROCESSING_STATE_KEY];
+
+    if (!processingState) return false;
+
+    const age = Date.now() - processingState.timestamp;
+
+    // Expired - clean up
+    if (age > PROCESSING_STATE_TTL_MS) {
+      console.log("AlphaDrop: Processing state expired, clearing");
+      await clearProcessingState();
+      return false;
+    }
+
+    // Has completed result - recover it
+    if (processingState.status === "completed" && processingState.resultBase64) {
+      console.log("AlphaDrop: Recovering completed processing result");
+
+      try {
+        state.imageUrl = processingState.originalImage;
+        state.resultBase64 = processingState.resultBase64;
+
+        elements.emptyState.classList.add("hidden");
+        elements.mainContent.classList.remove("hidden");
+        elements.originalImage.src = processingState.originalImage;
+        elements.resultImage.src = `data:image/png;base64,${processingState.resultBase64}`;
+        elements.resultCard.classList.remove("hidden");
+        elements.resultFrame.classList.add("checkerboard");
+        elements.downloadBtn.classList.remove("hidden");
+        elements.refineBtn.classList.remove("hidden");
+        elements.eraserBtn.classList.remove("hidden");
+
+        await storeOriginalResult(processingState.resultBase64);
+        await clearProcessingState();
+        await savePersistedState();
+
+        return true;
+      } catch (err) {
+        console.error("AlphaDrop: Error during recovery:", err);
+        await clearProcessingState();
+        return false;
+      }
+    }
+
+    // Still processing - show the original image
+    // DON'T clear processing state yet - offscreen might still complete and save result
+    if (processingState.status === "processing") {
+      console.log("AlphaDrop: Previous processing may still be running, waiting briefly...");
+
+      state.imageUrl = processingState.originalImage;
+      elements.emptyState.classList.add("hidden");
+      elements.mainContent.classList.remove("hidden");
+      elements.originalImage.src = processingState.originalImage;
+
+      // Wait a short time to see if processing completes
+      // This handles the race condition where offscreen finishes right as popup opens
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Re-check if processing completed during our wait
+      const recheckStored = await chrome.storage.local.get(PROCESSING_STATE_KEY);
+      const recheckState = recheckStored[PROCESSING_STATE_KEY];
+
+      if (recheckState?.status === "completed" && recheckState.resultBase64) {
+        console.log("AlphaDrop: Processing completed during wait, recovering result");
+        try {
+          state.resultBase64 = recheckState.resultBase64;
+          elements.resultImage.src = `data:image/png;base64,${recheckState.resultBase64}`;
+          elements.resultCard.classList.remove("hidden");
+          elements.resultFrame.classList.add("checkerboard");
+          elements.downloadBtn.classList.remove("hidden");
+          elements.refineBtn.classList.remove("hidden");
+          elements.eraserBtn.classList.remove("hidden");
+
+          await storeOriginalResult(recheckState.resultBase64);
+          await clearProcessingState();
+          await savePersistedState();
+        } catch (err) {
+          console.error("AlphaDrop: Error during recovery:", err);
+          await clearProcessingState();
+        }
+      } else {
+        // Processing didn't complete - clear stale state, user can re-process
+        console.log("AlphaDrop: Processing did not complete, clearing stale state");
+        await clearProcessingState();
+      }
+
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    console.error("AlphaDrop: Failed to check processing state:", error);
+    return false;
+  }
+}
+
 // Listen for progress updates from offscreen document
 function setupProgressListener() {
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "PROGRESS") {
-      setTargetProgress(message.pct);
+      // Only update progress if we're actively processing
+      if (state.isProcessing) {
+        setTargetProgress(message.pct);
+      }
     }
   });
 }
@@ -304,14 +511,42 @@ async function loadPendingImage() {
   const stored = await chrome.storage.local.get("pendingImage");
   if (stored.pendingImage) {
     const { url, timestamp } = stored.pendingImage;
+    // Check if pending image is recent (within 60 seconds)
     if (Date.now() - timestamp < 60000) {
+      // This will cancel any ongoing processing via loadImage()
       await loadImage(url);
     }
     await chrome.storage.local.remove("pendingImage");
   }
 }
 
+// Handle new pending images even while popup is open
+// This catches right-clicks that happen while the popup is already open
+function setupPendingImageListener() {
+  chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace === "local" && changes.pendingImage?.newValue) {
+      const { url, timestamp } = changes.pendingImage.newValue;
+      if (Date.now() - timestamp < 60000) {
+        // Load new image (will cancel any ongoing processing)
+        loadImage(url);
+        // Clear the pending image
+        chrome.storage.local.remove("pendingImage");
+      }
+    }
+  });
+}
+
 async function loadImage(url) {
+  // Cancel any ongoing processing by incrementing request ID
+  if (state.isProcessing) {
+    console.log("AlphaDrop: Cancelling previous processing request");
+    currentRequestId++;
+    state.isProcessing = false;
+    elements.processBtn.disabled = false;
+    elements.loadingCard.classList.add("hidden");
+    stopProgressAnimation();
+  }
+
   state.imageUrl = url;
   state.resultBase64 = null;
   state.originalResultData = null;
@@ -358,6 +593,10 @@ function selectMethod(method) {
 async function handleProcess() {
   if (state.isProcessing || !state.imageUrl) return;
 
+  // Increment request ID and capture it for this request
+  currentRequestId++;
+  const thisRequestId = currentRequestId;
+
   state.isProcessing = true;
   elements.processBtn.disabled = true;
   elements.resultCard.classList.add("hidden");
@@ -365,16 +604,44 @@ async function handleProcess() {
   resetProgress();
   hideError();
 
+  // Setup timeout
+  const timeoutId = setTimeout(() => {
+    if (state.isProcessing && currentRequestId === thisRequestId) {
+      console.log("AlphaDrop: Request timed out");
+      currentRequestId++; // Cancel this request
+      state.isProcessing = false;
+      elements.processBtn.disabled = false;
+      elements.loadingCard.classList.add("hidden");
+      stopProgressAnimation();
+      showError("Processing timed out. Please try again.");
+    }
+  }, REQUEST_TIMEOUT_MS);
+
   try {
+    // Check if request was cancelled
+    if (currentRequestId !== thisRequestId) {
+      console.log("AlphaDrop: Request cancelled before fetch");
+      return;
+    }
+
     // First fetch the image as data URL
     const fetchRes = await chrome.runtime.sendMessage({
       type: "FETCH_IMAGE",
       imageUrl: state.imageUrl,
     });
 
+    // Check again after async operation
+    if (currentRequestId !== thisRequestId) {
+      console.log("AlphaDrop: Request cancelled after fetch");
+      return;
+    }
+
     if (!fetchRes.success) {
       throw new Error(fetchRes.error || "Failed to fetch image");
     }
+
+    // Save processing state for recovery (if popup closes)
+    await saveProcessingState(fetchRes.data, thisRequestId);
 
     setTargetProgress(10);
 
@@ -384,6 +651,13 @@ async function handleProcess() {
       // Color-based method - process locally (no AI)
       setTargetProgress(30);
       resultDataUrl = await processColorBased(fetchRes.data);
+
+      // Check if cancelled
+      if (currentRequestId !== thisRequestId) {
+        console.log("AlphaDrop: Request cancelled during color processing");
+        return;
+      }
+
       setTargetProgress(100);
     } else {
       // AI methods (matting/segmentation) - use offscreen document
@@ -392,11 +666,23 @@ async function handleProcess() {
         imageData: fetchRes.data,
       });
 
+      // Check if cancelled after AI processing
+      if (currentRequestId !== thisRequestId) {
+        console.log("AlphaDrop: Request cancelled after AI processing");
+        return;
+      }
+
       if (!result.success) {
         throw new Error(result.error || "Processing failed");
       }
 
       resultDataUrl = result.data;
+    }
+
+    // Final check before updating UI
+    if (currentRequestId !== thisRequestId) {
+      console.log("AlphaDrop: Request cancelled before UI update");
+      return;
     }
 
     // Extract base64 from data URL
@@ -411,14 +697,26 @@ async function handleProcess() {
     elements.refineBtn.classList.remove("hidden");
     elements.eraserBtn.classList.remove("hidden");
 
+    // Clear processing state (no longer needed for recovery)
+    await clearProcessingState();
+
     await savePersistedState();
   } catch (error) {
-    showError(error.message);
+    // Only show error if this request is still current
+    if (currentRequestId === thisRequestId) {
+      showError(error.message || "An error occurred");
+      // Clear processing state on error
+      await clearProcessingState().catch(() => {});
+    }
   } finally {
-    state.isProcessing = false;
-    elements.processBtn.disabled = false;
-    elements.loadingCard.classList.add("hidden");
-    stopProgressAnimation();
+    clearTimeout(timeoutId);
+    // Only reset state if this request is still current
+    if (currentRequestId === thisRequestId) {
+      state.isProcessing = false;
+      elements.processBtn.disabled = false;
+      elements.loadingCard.classList.add("hidden");
+      stopProgressAnimation();
+    }
   }
 }
 

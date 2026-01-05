@@ -10,6 +10,10 @@ env.backends.onnx.wasm.proxy = false;
 // Use local WASM files instead of CDN
 env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL("/");
 
+// Suppress ONNX Runtime warnings about node assignments
+// These warnings are informational and don't affect output quality
+env.backends.onnx.logLevel = "error";  // Only show errors, not warnings
+
 let model = null;
 let processor = null;
 
@@ -918,8 +922,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     };
 
     removeBackground(msg.imageData, sendProgress)
-      .then(result => sendResponse({ success: true, data: result }))
-      .catch(e => sendResponse({ success: false, error: e.message }));
+      .then(async (result) => {
+        // Save result to storage for recovery if popup closed during processing
+        try {
+          const stored = await chrome.storage.local.get("processingState");
+          const processingState = stored?.processingState;
+
+          // Only save if there's a valid processing state that's still in "processing" status
+          // This prevents overwriting if user started a new image or cleared state
+          if (processingState &&
+              processingState.status === "processing" &&
+              processingState.originalImage) {
+            const resultBase64 = result.replace(/^data:image\/png;base64,/, "");
+            await chrome.storage.local.set({
+              processingState: {
+                ...processingState,
+                resultBase64: resultBase64,
+                status: "completed",
+                completedAt: Date.now()
+              }
+            });
+            console.log("AlphaDrop: Result saved to storage for recovery");
+          }
+        } catch (e) {
+          // Non-critical - popup might still be open to receive result
+          console.log("AlphaDrop: Could not save result to storage:", e?.message || e);
+        }
+
+        sendResponse({ success: true, data: result });
+      })
+      .catch(e => sendResponse({ success: false, error: e?.message || "Processing failed" }));
 
     return true;
   }
