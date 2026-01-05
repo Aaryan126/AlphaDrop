@@ -784,9 +784,34 @@ function bilinearUpscale(src, srcWidth, srcHeight, dstWidth, dstHeight) {
  * @param {Uint8ClampedArray} rgbData - Original image RGBA data
  * @param {number} imageWidth - Original image width
  * @param {number} imageHeight - Original image height
+ * @param {string} method - Processing method: 'matting' (soft edges) or 'segmentation' (hard edges)
  * @returns {Uint8Array} - Refined mask at original resolution (0-255)
  */
-function refineMask(rawMask, maskWidth, maskHeight, rgbData, imageWidth, imageHeight) {
+function refineMask(rawMask, maskWidth, maskHeight, rgbData, imageWidth, imageHeight, method = 'matting') {
+  // Method-specific parameters
+  // 'matting' = soft edges, preserves fine details (hair, fur)
+  // 'segmentation' = hard edges, clean cutouts (products, objects)
+  const isSegmentation = method === 'segmentation';
+
+  const params = isSegmentation ? {
+    // Segmentation: aggressive cleanup for hard edges
+    guidedFilterRadius: 4,        // Smaller radius = sharper edges
+    guidedFilterEps: 0.01,        // Higher eps = less edge-aware (smoother)
+    trimapFgThreshold: 200,       // Lower = more aggressive foreground
+    trimapBgThreshold: 30,        // Higher = more aggressive background
+    trimapErodeSize: 8,           // Larger erosion = cleaner edges
+    featherRadius: 2,             // Less feathering
+    hardenEdges: true,            // Apply edge hardening pass
+  } : {
+    // Matting: preserve fine details, soft edges
+    guidedFilterRadius: 8,        // Larger radius = preserves more detail
+    guidedFilterEps: 0.001,       // Lower eps = more edge-aware
+    trimapFgThreshold: 240,       // Standard thresholds
+    trimapBgThreshold: 10,
+    trimapErodeSize: 5,           // Standard erosion
+    featherRadius: 4,             // More feathering for soft edges
+    hardenEdges: false,
+  };
   // Step 1: Convert raw mask to float (0-1)
   const maskFloat = new Float32Array(maskWidth * maskHeight);
   for (let i = 0; i < rawMask.length; i++) {
@@ -809,33 +834,47 @@ function refineMask(rawMask, maskWidth, maskHeight, rgbData, imageWidth, imageHe
   }
 
   // Step 6: Apply guided filter using original RGB as guide
-  const guidedMask = guidedFilter(maskUint8, rgbData, imageWidth, imageHeight, 8, 0.001);
+  const guidedMask = guidedFilter(maskUint8, rgbData, imageWidth, imageHeight, params.guidedFilterRadius, params.guidedFilterEps);
 
   // Step 7: Apply trimap-based alpha matting refinement
   // This creates definite FG/BG regions via erosion, then refines
   // unknown regions based on color similarity to sampled FG/BG colors
   const trimapRefinedMask = trimapAlphaMatting(guidedMask, rgbData, imageWidth, imageHeight, {
-    foregroundThreshold: 240,
-    backgroundThreshold: 10,
-    erodeSize: 5
+    foregroundThreshold: params.trimapFgThreshold,
+    backgroundThreshold: params.trimapBgThreshold,
+    erodeSize: params.trimapErodeSize
   });
 
   // Step 8: Compute image gradients for feathering
   const gradients = computeGradients(rgbData, imageWidth, imageHeight);
 
   // Step 9: Apply gradient-aware feathering
-  const featheredMask = gradientAwareFeathering(trimapRefinedMask, gradients, uncertainty, imageWidth, imageHeight, 4);
+  const featheredMask = gradientAwareFeathering(trimapRefinedMask, gradients, uncertainty, imageWidth, imageHeight, params.featherRadius);
 
   // Step 10: Convert back to Uint8Array (0-255)
   const finalMask = new Uint8Array(imageWidth * imageHeight);
   for (let i = 0; i < featheredMask.length; i++) {
-    finalMask[i] = Math.round(Math.max(0, Math.min(1, featheredMask[i])) * 255);
+    let value = Math.max(0, Math.min(1, featheredMask[i]));
+
+    // Step 10b: For segmentation mode, harden edges by pushing values toward 0 or 1
+    if (params.hardenEdges) {
+      // Apply sigmoid-like curve to push mid-values toward extremes
+      // This creates cleaner, more defined edges
+      if (value > 0.1 && value < 0.9) {
+        value = value < 0.5 ? value * 0.5 : 1 - (1 - value) * 0.5;
+      }
+      // Additional threshold to eliminate very faint edges
+      if (value < 0.15) value = 0;
+      if (value > 0.85) value = 1;
+    }
+
+    finalMask[i] = Math.round(value * 255);
   }
 
   return finalMask;
 }
 
-async function removeBackground(imageDataUrl, sendProgress) {
+async function removeBackground(imageDataUrl, sendProgress, method = 'matting') {
   await loadModel(sendProgress);
 
   sendProgress("Processing image", 0);
@@ -877,14 +916,15 @@ async function removeBackground(imageDataUrl, sendProgress) {
 
   sendProgress("Refining edges", 65);
 
-  // Apply enhanced post-processing pipeline
+  // Apply enhanced post-processing pipeline with method-specific parameters
   const refinedMask = refineMask(
     rawMask,
     maskWidth,
     maskHeight,
     imageData.data,
     image.width,
-    image.height
+    image.height,
+    method
   );
 
   sendProgress("Applying mask", 88);
@@ -898,7 +938,11 @@ async function removeBackground(imageDataUrl, sendProgress) {
 
   // Apply color defringing to remove background color contamination from edge pixels
   // This replaces the RGB of semi-transparent pixels with colors from nearby opaque foreground
-  defringe(imageData, image.width, image.height, 10, 5, 250);
+  // For segmentation mode, use tighter alpha thresholds for more aggressive cleanup
+  const isSegmentation = method === 'segmentation';
+  const defringeAlphaLow = isSegmentation ? 10 : 5;    // Higher = more aggressive
+  const defringeAlphaHigh = isSegmentation ? 240 : 250; // Lower = more aggressive
+  defringe(imageData, image.width, image.height, 10, defringeAlphaLow, defringeAlphaHigh);
 
   ctx.putImageData(imageData, 0, 0);
 
@@ -921,7 +965,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chrome.runtime.sendMessage({ type: "PROGRESS", key, pct }).catch(() => {});
     };
 
-    removeBackground(msg.imageData, sendProgress)
+    // Pass method to removeBackground ('matting' for soft edges, 'segmentation' for hard edges)
+    const method = msg.method || 'matting';
+    removeBackground(msg.imageData, sendProgress, method)
       .then(async (result) => {
         // Save result to storage for recovery if popup closed during processing
         try {

@@ -87,16 +87,8 @@ body {
 .logo-icon {
   width: 24px;
   height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent);
-  color: white;
-  font-size: 16px;
-  font-weight: 700;
-  font-style: italic;
+  object-fit: contain;
   border-radius: 6px;
-  font-family: "Times New Roman", Georgia, serif;
 }
 
 .status-dot {

@@ -53,7 +53,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "PROCESS_IMAGE") {
     (async () => {
       await ensureOffscreen();
-      const result = await chrome.runtime.sendMessage({ type: "REMOVE_BG", imageData: msg.imageData });
+      const result = await chrome.runtime.sendMessage({
+        type: "REMOVE_BG",
+        imageData: msg.imageData,
+        method: msg.method || "matting"
+      });
       sendResponse(result);
     })();
     return true;

@@ -49271,7 +49271,39 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     }
     return dst;
   }
-  function refineMask(rawMask, maskWidth, maskHeight, rgbData, imageWidth, imageHeight) {
+  function refineMask(rawMask, maskWidth, maskHeight, rgbData, imageWidth, imageHeight, method = "matting") {
+    const isSegmentation = method === "segmentation";
+    const params = isSegmentation ? {
+      // Segmentation: aggressive cleanup for hard edges
+      guidedFilterRadius: 4,
+      // Smaller radius = sharper edges
+      guidedFilterEps: 0.01,
+      // Higher eps = less edge-aware (smoother)
+      trimapFgThreshold: 200,
+      // Lower = more aggressive foreground
+      trimapBgThreshold: 30,
+      // Higher = more aggressive background
+      trimapErodeSize: 8,
+      // Larger erosion = cleaner edges
+      featherRadius: 2,
+      // Less feathering
+      hardenEdges: true
+      // Apply edge hardening pass
+    } : {
+      // Matting: preserve fine details, soft edges
+      guidedFilterRadius: 8,
+      // Larger radius = preserves more detail
+      guidedFilterEps: 1e-3,
+      // Lower eps = more edge-aware
+      trimapFgThreshold: 240,
+      // Standard thresholds
+      trimapBgThreshold: 10,
+      trimapErodeSize: 5,
+      // Standard erosion
+      featherRadius: 4,
+      // More feathering for soft edges
+      hardenEdges: false
+    };
     const maskFloat = new Float32Array(maskWidth * maskHeight);
     for (let i = 0; i < rawMask.length; i++) {
       maskFloat[i] = rawMask[i] / 255;
@@ -49283,21 +49315,31 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     for (let i = 0; i < upscaledMask.length; i++) {
       maskUint8[i] = Math.round(upscaledMask[i] * 255);
     }
-    const guidedMask = guidedFilter(maskUint8, rgbData, imageWidth, imageHeight, 8, 1e-3);
+    const guidedMask = guidedFilter(maskUint8, rgbData, imageWidth, imageHeight, params.guidedFilterRadius, params.guidedFilterEps);
     const trimapRefinedMask = trimapAlphaMatting(guidedMask, rgbData, imageWidth, imageHeight, {
-      foregroundThreshold: 240,
-      backgroundThreshold: 10,
-      erodeSize: 5
+      foregroundThreshold: params.trimapFgThreshold,
+      backgroundThreshold: params.trimapBgThreshold,
+      erodeSize: params.trimapErodeSize
     });
     const gradients = computeGradients(rgbData, imageWidth, imageHeight);
-    const featheredMask = gradientAwareFeathering(trimapRefinedMask, gradients, uncertainty, imageWidth, imageHeight, 4);
+    const featheredMask = gradientAwareFeathering(trimapRefinedMask, gradients, uncertainty, imageWidth, imageHeight, params.featherRadius);
     const finalMask = new Uint8Array(imageWidth * imageHeight);
     for (let i = 0; i < featheredMask.length; i++) {
-      finalMask[i] = Math.round(Math.max(0, Math.min(1, featheredMask[i])) * 255);
+      let value = Math.max(0, Math.min(1, featheredMask[i]));
+      if (params.hardenEdges) {
+        if (value > 0.1 && value < 0.9) {
+          value = value < 0.5 ? value * 0.5 : 1 - (1 - value) * 0.5;
+        }
+        if (value < 0.15)
+          value = 0;
+        if (value > 0.85)
+          value = 1;
+      }
+      finalMask[i] = Math.round(value * 255);
     }
     return finalMask;
   }
-  async function removeBackground(imageDataUrl, sendProgress) {
+  async function removeBackground(imageDataUrl, sendProgress, method = "matting") {
     await loadModel(sendProgress);
     sendProgress("Processing image", 0);
     const image = await __webpack_exports__RawImage.fromURL(imageDataUrl);
@@ -49324,14 +49366,18 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       maskHeight,
       imageData.data,
       image.width,
-      image.height
+      image.height,
+      method
     );
     sendProgress("Applying mask", 88);
     for (let i = 0; i < refinedMask.length; i++) {
       imageData.data[i * 4 + 3] = refinedMask[i];
     }
     sendProgress("Cleaning edges", 94);
-    defringe(imageData, image.width, image.height, 10, 5, 250);
+    const isSegmentation = method === "segmentation";
+    const defringeAlphaLow = isSegmentation ? 10 : 5;
+    const defringeAlphaHigh = isSegmentation ? 240 : 250;
+    defringe(imageData, image.width, image.height, 10, defringeAlphaLow, defringeAlphaHigh);
     ctx.putImageData(imageData, 0, 0);
     const blob = await canvas.convertToBlob({ type: "image/png" });
     const reader = new FileReader();
@@ -49349,7 +49395,8 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
         chrome.runtime.sendMessage({ type: "PROGRESS", key, pct }).catch(() => {
         });
       };
-      removeBackground(msg.imageData, sendProgress).then(async (result) => {
+      const method = msg.method || "matting";
+      removeBackground(msg.imageData, sendProgress, method).then(async (result) => {
         try {
           const stored = await chrome.storage.local.get("processingState");
           const processingState = stored?.processingState;
