@@ -273,6 +273,16 @@ body {
   transform: scale(1.05);
 }
 
+.upload-new-btn {
+  background: var(--accent);
+  color: white;
+}
+
+.upload-new-btn:hover {
+  background: var(--accent-hover);
+  color: white;
+}
+
 .preview-frame.checkerboard {
   background-color: #ffffff;
   background-image:

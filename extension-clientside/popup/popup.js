@@ -9,6 +9,7 @@ const elements = {
   uploadBtn: document.getElementById("upload-btn"),
   fileInput: document.getElementById("file-input"),
   mainContent: document.getElementById("main-content"),
+  uploadNewBtn: document.getElementById("upload-new-btn"),
   originalImage: document.getElementById("original-image"),
   resultImage: document.getElementById("result-image"),
   originalFrame: document.getElementById("original-frame"),
@@ -658,6 +659,7 @@ function setupEventListeners() {
 
   // File upload
   elements.uploadBtn.addEventListener("click", () => elements.fileInput.click());
+  elements.uploadNewBtn.addEventListener("click", () => elements.fileInput.click());
   elements.fileInput.addEventListener("change", handleFileUpload);
 }
 
