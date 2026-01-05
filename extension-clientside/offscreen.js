@@ -365,6 +365,120 @@ function gradientAwareFeathering(mask, gradients, uncertainty, width, height, fe
 }
 
 /**
+ * Color defringing: Replace contaminated edge pixel colors with nearby foreground colors.
+ *
+ * For semi-transparent pixels (edges), their RGB values contain a blend of foreground
+ * and background colors. This function replaces those contaminated RGB values with
+ * colors sampled from nearby fully-opaque foreground pixels, eliminating the
+ * "halo" or "fringe" effect when composited on a new background.
+ *
+ * @param {ImageData} imageData - Image data with alpha channel already applied
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {number} searchRadius - How far to search for foreground colors (default 10)
+ * @param {number} alphaLow - Lower alpha threshold for edge detection (default 5)
+ * @param {number} alphaHigh - Upper alpha threshold for edge detection (default 250)
+ */
+function defringe(imageData, width, height, searchRadius = 10, alphaLow = 5, alphaHigh = 250) {
+  const data = imageData.data;
+  const size = width * height;
+
+  // Step 1: Build a map of foreground pixel locations for fast lookup
+  // Foreground = fully opaque pixels (alpha >= alphaHigh)
+  const isForeground = new Uint8Array(size);
+  for (let i = 0; i < size; i++) {
+    if (data[i * 4 + 3] >= alphaHigh) {
+      isForeground[i] = 1;
+    }
+  }
+
+  // Step 2: For each edge pixel, find nearest foreground pixel and copy its color
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const alpha = data[idx * 4 + 3];
+
+      // Skip fully transparent and fully opaque pixels
+      if (alpha <= alphaLow || alpha >= alphaHigh) continue;
+
+      // This is an edge pixel - find nearest foreground pixel
+      let bestDist = Infinity;
+      let bestR = data[idx * 4];
+      let bestG = data[idx * 4 + 1];
+      let bestB = data[idx * 4 + 2];
+      let found = false;
+
+      // Search in expanding squares for efficiency
+      for (let r = 1; r <= searchRadius && !found; r++) {
+        // Check pixels at distance r (square perimeter)
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            // Only check perimeter pixels at this radius
+            if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+
+            const ny = y + dy;
+            const nx = x + dx;
+
+            if (ny < 0 || ny >= height || nx < 0 || nx >= width) continue;
+
+            const nIdx = ny * width + nx;
+            if (isForeground[nIdx]) {
+              const dist = dx * dx + dy * dy;
+              if (dist < bestDist) {
+                bestDist = dist;
+                bestR = data[nIdx * 4];
+                bestG = data[nIdx * 4 + 1];
+                bestB = data[nIdx * 4 + 2];
+                found = true;
+              }
+            }
+          }
+        }
+      }
+
+      // If no foreground found nearby, try a wider weighted average approach
+      if (!found) {
+        let sumR = 0, sumG = 0, sumB = 0, sumWeight = 0;
+
+        for (let dy = -searchRadius; dy <= searchRadius; dy++) {
+          for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+            const ny = y + dy;
+            const nx = x + dx;
+
+            if (ny < 0 || ny >= height || nx < 0 || nx >= width) continue;
+
+            const nIdx = ny * width + nx;
+            const nAlpha = data[nIdx * 4 + 3];
+
+            // Weight by alpha (prefer more opaque pixels) and inverse distance
+            if (nAlpha > alpha) {
+              const dist = Math.sqrt(dx * dx + dy * dy) + 1;
+              const weight = (nAlpha / 255) / dist;
+
+              sumR += data[nIdx * 4] * weight;
+              sumG += data[nIdx * 4 + 1] * weight;
+              sumB += data[nIdx * 4 + 2] * weight;
+              sumWeight += weight;
+            }
+          }
+        }
+
+        if (sumWeight > 0) {
+          bestR = Math.round(sumR / sumWeight);
+          bestG = Math.round(sumG / sumWeight);
+          bestB = Math.round(sumB / sumWeight);
+        }
+      }
+
+      // Replace the edge pixel's RGB with the foreground color (keep alpha)
+      data[idx * 4] = bestR;
+      data[idx * 4 + 1] = bestG;
+      data[idx * 4 + 2] = bestB;
+    }
+  }
+}
+
+/**
  * Bilinear upscale for mask - better quality than nearest neighbor.
  */
 function bilinearUpscale(src, srcWidth, srcHeight, dstWidth, dstHeight) {
@@ -504,12 +618,19 @@ async function removeBackground(imageDataUrl, sendProgress) {
     image.height
   );
 
-  sendProgress("Applying mask", 90);
+  sendProgress("Applying mask", 85);
 
   // Apply refined mask as alpha channel
   for (let i = 0; i < refinedMask.length; i++) {
     imageData.data[i * 4 + 3] = refinedMask[i];
   }
+
+  sendProgress("Removing color fringe", 92);
+
+  // Apply color defringing to remove background color contamination from edge pixels
+  // This replaces the RGB of semi-transparent pixels with colors from nearby opaque foreground
+  defringe(imageData, image.width, image.height, 10, 5, 250);
+
   ctx.putImageData(imageData, 0, 0);
 
   // Convert to blob and then to data URL
