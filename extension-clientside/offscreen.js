@@ -478,6 +478,262 @@ function defringe(imageData, width, height, searchRadius = 10, alphaLow = 5, alp
   }
 }
 
+// ============================================
+// Phase 2: Trimap-Based Alpha Refinement
+// Based on rembg/PyMatting approach
+// ============================================
+
+/**
+ * Binary erosion - shrinks regions by removing boundary pixels.
+ * Similar to scipy.ndimage.binary_erosion.
+ *
+ * @param {Uint8Array} mask - Binary mask (0 or 1)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {number} radius - Erosion radius (structure element size)
+ * @param {number} borderValue - Value to use for pixels outside boundary (0 or 1)
+ * @returns {Uint8Array} - Eroded binary mask
+ */
+function binaryErosion(mask, width, height, radius, borderValue = 0) {
+  const result = new Uint8Array(mask.length);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+
+      // If the pixel is already 0, it stays 0
+      if (mask[idx] === 0) {
+        result[idx] = 0;
+        continue;
+      }
+
+      // Check all neighbors in the structuring element
+      let allOnes = true;
+
+      for (let dy = -radius; dy <= radius && allOnes; dy++) {
+        for (let dx = -radius; dx <= radius && allOnes; dx++) {
+          const ny = y + dy;
+          const nx = x + dx;
+
+          // Handle boundary
+          if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+            if (borderValue === 0) {
+              allOnes = false;
+            }
+          } else {
+            if (mask[ny * width + nx] === 0) {
+              allOnes = false;
+            }
+          }
+        }
+      }
+
+      result[idx] = allOnes ? 1 : 0;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Create a trimap from a mask using erosion.
+ * Trimap has three regions:
+ * - 255: Definite foreground (eroded high-confidence foreground)
+ * - 0: Definite background (eroded high-confidence background)
+ * - 128: Unknown region (needs refinement)
+ *
+ * @param {Uint8Array} mask - Input mask (0-255)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {number} foregroundThreshold - Threshold for definite foreground (default 240)
+ * @param {number} backgroundThreshold - Threshold for definite background (default 10)
+ * @param {number} erodeSize - Erosion radius (default 5)
+ * @returns {Uint8Array} - Trimap (0, 128, or 255)
+ */
+function createTrimap(mask, width, height, foregroundThreshold = 240, backgroundThreshold = 10, erodeSize = 5) {
+  const size = width * height;
+
+  // Create binary masks for foreground and background
+  const isForeground = new Uint8Array(size);
+  const isBackground = new Uint8Array(size);
+
+  for (let i = 0; i < size; i++) {
+    isForeground[i] = mask[i] > foregroundThreshold ? 1 : 0;
+    isBackground[i] = mask[i] < backgroundThreshold ? 1 : 0;
+  }
+
+  // Erode both regions to create definite areas
+  const erodedForeground = binaryErosion(isForeground, width, height, erodeSize, 0);
+  const erodedBackground = binaryErosion(isBackground, width, height, erodeSize, 1);
+
+  // Build trimap
+  const trimap = new Uint8Array(size);
+  for (let i = 0; i < size; i++) {
+    if (erodedForeground[i] === 1) {
+      trimap[i] = 255; // Definite foreground
+    } else if (erodedBackground[i] === 1) {
+      trimap[i] = 0; // Definite background
+    } else {
+      trimap[i] = 128; // Unknown - needs refinement
+    }
+  }
+
+  return trimap;
+}
+
+/**
+ * Sample representative colors from foreground and background regions.
+ * Uses K-means-like clustering to find dominant colors.
+ *
+ * @param {Uint8ClampedArray} rgbData - Image RGBA data
+ * @param {Uint8Array} trimap - Trimap (0, 128, 255)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {number} maxSamples - Maximum samples per region
+ * @returns {Object} - { foreground: [[r,g,b], ...], background: [[r,g,b], ...] }
+ */
+function sampleRegionColors(rgbData, trimap, width, height, maxSamples = 1000) {
+  const size = width * height;
+  const fgColors = [];
+  const bgColors = [];
+
+  // Collect colors from definite regions (sample evenly)
+  const fgIndices = [];
+  const bgIndices = [];
+
+  for (let i = 0; i < size; i++) {
+    if (trimap[i] === 255) fgIndices.push(i);
+    else if (trimap[i] === 0) bgIndices.push(i);
+  }
+
+  // Sample foreground colors
+  const fgStep = Math.max(1, Math.floor(fgIndices.length / maxSamples));
+  for (let i = 0; i < fgIndices.length; i += fgStep) {
+    const idx = fgIndices[i] * 4;
+    fgColors.push([rgbData[idx], rgbData[idx + 1], rgbData[idx + 2]]);
+  }
+
+  // Sample background colors
+  const bgStep = Math.max(1, Math.floor(bgIndices.length / maxSamples));
+  for (let i = 0; i < bgIndices.length; i += bgStep) {
+    const idx = bgIndices[i] * 4;
+    bgColors.push([rgbData[idx], rgbData[idx + 1], rgbData[idx + 2]]);
+  }
+
+  return { foreground: fgColors, background: bgColors };
+}
+
+/**
+ * Calculate color distance between two RGB colors.
+ * Uses weighted Euclidean distance in RGB space.
+ */
+function colorDistance(c1, c2) {
+  // Weighted RGB distance (human eye is more sensitive to green)
+  const dr = c1[0] - c2[0];
+  const dg = c1[1] - c2[1];
+  const db = c1[2] - c2[2];
+  return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db);
+}
+
+/**
+ * Find minimum distance from a color to a set of colors.
+ */
+function minDistanceToSet(color, colorSet) {
+  let minDist = Infinity;
+  for (const c of colorSet) {
+    const dist = colorDistance(color, c);
+    if (dist < minDist) minDist = dist;
+  }
+  return minDist;
+}
+
+/**
+ * Refine alpha values in unknown regions using color similarity.
+ * For each unknown pixel, estimate alpha based on whether its color
+ * is more similar to foreground or background samples.
+ *
+ * @param {Float32Array} mask - Input mask (0-1)
+ * @param {Uint8Array} trimap - Trimap (0, 128, 255)
+ * @param {Uint8ClampedArray} rgbData - Image RGBA data
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {Object} samples - { foreground: [...], background: [...] }
+ * @returns {Float32Array} - Refined mask (0-1)
+ */
+function refineUnknownRegions(mask, trimap, rgbData, width, height, samples) {
+  const size = width * height;
+  const result = new Float32Array(mask);
+
+  // Skip if we don't have enough samples
+  if (samples.foreground.length < 10 || samples.background.length < 10) {
+    return result;
+  }
+
+  for (let i = 0; i < size; i++) {
+    // Only refine unknown regions
+    if (trimap[i] !== 128) continue;
+
+    const idx4 = i * 4;
+    const pixelColor = [rgbData[idx4], rgbData[idx4 + 1], rgbData[idx4 + 2]];
+
+    // Calculate distance to foreground and background color sets
+    const distToFg = minDistanceToSet(pixelColor, samples.foreground);
+    const distToBg = minDistanceToSet(pixelColor, samples.background);
+
+    // Compute alpha based on relative distances
+    // If closer to foreground, alpha is higher
+    const totalDist = distToFg + distToBg + 0.001; // Avoid division by zero
+    const colorBasedAlpha = distToBg / totalDist;
+
+    // Blend with original mask value (don't completely override)
+    // Use original mask as a prior, color similarity as evidence
+    const originalAlpha = mask[i];
+    const blendWeight = 0.6; // How much to trust color-based alpha
+    result[i] = originalAlpha * (1 - blendWeight) + colorBasedAlpha * blendWeight;
+
+    // Clamp to valid range
+    result[i] = Math.max(0, Math.min(1, result[i]));
+  }
+
+  return result;
+}
+
+/**
+ * Full trimap-based alpha matting pipeline.
+ * Creates a trimap, samples colors, and refines unknown regions.
+ *
+ * @param {Float32Array} mask - Input mask (0-1)
+ * @param {Uint8ClampedArray} rgbData - Image RGBA data
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {Object} options - Configuration options
+ * @returns {Float32Array} - Refined mask (0-1)
+ */
+function trimapAlphaMatting(mask, rgbData, width, height, options = {}) {
+  const {
+    foregroundThreshold = 240,
+    backgroundThreshold = 10,
+    erodeSize = 5
+  } = options;
+
+  // Convert mask to 0-255 for trimap creation
+  const mask255 = new Uint8Array(mask.length);
+  for (let i = 0; i < mask.length; i++) {
+    mask255[i] = Math.round(mask[i] * 255);
+  }
+
+  // Create trimap
+  const trimap = createTrimap(mask255, width, height, foregroundThreshold, backgroundThreshold, erodeSize);
+
+  // Sample colors from definite regions
+  const samples = sampleRegionColors(rgbData, trimap, width, height);
+
+  // Refine unknown regions based on color similarity
+  const refinedMask = refineUnknownRegions(mask, trimap, rgbData, width, height, samples);
+
+  return refinedMask;
+}
+
 /**
  * Bilinear upscale for mask - better quality than nearest neighbor.
  */
@@ -551,13 +807,22 @@ function refineMask(rawMask, maskWidth, maskHeight, rgbData, imageWidth, imageHe
   // Step 6: Apply guided filter using original RGB as guide
   const guidedMask = guidedFilter(maskUint8, rgbData, imageWidth, imageHeight, 8, 0.001);
 
-  // Step 7: Compute image gradients for feathering
+  // Step 7: Apply trimap-based alpha matting refinement
+  // This creates definite FG/BG regions via erosion, then refines
+  // unknown regions based on color similarity to sampled FG/BG colors
+  const trimapRefinedMask = trimapAlphaMatting(guidedMask, rgbData, imageWidth, imageHeight, {
+    foregroundThreshold: 240,
+    backgroundThreshold: 10,
+    erodeSize: 5
+  });
+
+  // Step 8: Compute image gradients for feathering
   const gradients = computeGradients(rgbData, imageWidth, imageHeight);
 
-  // Step 8: Apply gradient-aware feathering
-  const featheredMask = gradientAwareFeathering(guidedMask, gradients, uncertainty, imageWidth, imageHeight, 4);
+  // Step 9: Apply gradient-aware feathering
+  const featheredMask = gradientAwareFeathering(trimapRefinedMask, gradients, uncertainty, imageWidth, imageHeight, 4);
 
-  // Step 9: Convert back to Uint8Array (0-255)
+  // Step 10: Convert back to Uint8Array (0-255)
   const finalMask = new Uint8Array(imageWidth * imageHeight);
   for (let i = 0; i < featheredMask.length; i++) {
     finalMask[i] = Math.round(Math.max(0, Math.min(1, featheredMask[i])) * 255);
@@ -606,7 +871,7 @@ async function removeBackground(imageDataUrl, sendProgress) {
   // Get original image RGBA data for guided filtering
   const imageData = ctx.getImageData(0, 0, image.width, image.height);
 
-  sendProgress("Refining edges", 70);
+  sendProgress("Refining edges", 65);
 
   // Apply enhanced post-processing pipeline
   const refinedMask = refineMask(
@@ -618,14 +883,14 @@ async function removeBackground(imageDataUrl, sendProgress) {
     image.height
   );
 
-  sendProgress("Applying mask", 85);
+  sendProgress("Applying mask", 88);
 
   // Apply refined mask as alpha channel
   for (let i = 0; i < refinedMask.length; i++) {
     imageData.data[i * 4 + 3] = refinedMask[i];
   }
 
-  sendProgress("Removing color fringe", 92);
+  sendProgress("Cleaning edges", 94);
 
   // Apply color defringing to remove background color contamination from edge pixels
   // This replaces the RGB of semi-transparent pixels with colors from nearby opaque foreground
