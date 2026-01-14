@@ -49360,30 +49360,43 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     ctx.drawImage(imgBitmap, 0, 0);
     const imageData = ctx.getImageData(0, 0, image.width, image.height);
     sendProgress("Refining edges", 65);
-    const refinedMask = refineMask(
-      rawMask,
-      maskWidth,
-      maskHeight,
-      imageData.data,
-      image.width,
-      image.height,
-      method
-    );
+    let finalMask;
+    if (method === "matting") {
+      sendProgress("Upscaling mask", 75);
+      const maskFloat = new Float32Array(maskWidth * maskHeight);
+      for (let i = 0; i < rawMask.length; i++) {
+        maskFloat[i] = rawMask[i] / 255;
+      }
+      const upscaledMask = bilinearUpscale(maskFloat, maskWidth, maskHeight, image.width, image.height);
+      finalMask = new Uint8Array(image.width * image.height);
+      for (let i = 0; i < upscaledMask.length; i++) {
+        finalMask[i] = Math.round(Math.max(0, Math.min(1, upscaledMask[i])) * 255);
+      }
+    } else {
+      finalMask = refineMask(
+        rawMask,
+        maskWidth,
+        maskHeight,
+        imageData.data,
+        image.width,
+        image.height,
+        method
+      );
+    }
     sendProgress("Applying mask", 88);
-    for (let i = 0; i < refinedMask.length; i++) {
-      imageData.data[i * 4 + 3] = refinedMask[i];
+    for (let i = 0; i < finalMask.length; i++) {
+      imageData.data[i * 4 + 3] = finalMask[i];
     }
     sendProgress("Cleaning edges", 94);
-    const isSegmentation = method === "segmentation";
-    const defringeAlphaLow = isSegmentation ? 10 : 5;
-    const defringeAlphaHigh = isSegmentation ? 240 : 250;
-    defringe(imageData, image.width, image.height, 10, defringeAlphaLow, defringeAlphaHigh);
+    if (method === "segmentation") {
+      defringe(imageData, image.width, image.height, 10, 10, 240);
+    }
     ctx.putImageData(imageData, 0, 0);
+    sendProgress("Finalizing", 95);
     const blob = await canvas.convertToBlob({ type: "image/png" });
     const reader = new FileReader();
     return new Promise((resolve) => {
       reader.onloadend = () => {
-        sendProgress("Done", 100);
         resolve(reader.result);
       };
       reader.readAsDataURL(blob);

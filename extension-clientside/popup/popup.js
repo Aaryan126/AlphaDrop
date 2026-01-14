@@ -898,9 +898,27 @@ async function handleProcess() {
       return;
     }
 
+    setTargetProgress(96);
+
     // Extract base64 from data URL
     state.resultBase64 = resultDataUrl.replace(/^data:image\/png;base64,/, "");
-    elements.resultImage.src = resultDataUrl;
+
+    // Wait for image to actually load before showing completion
+    await new Promise((resolve, reject) => {
+      const onLoad = () => {
+        elements.resultImage.removeEventListener('error', onError);
+        resolve();
+      };
+      const onError = () => {
+        elements.resultImage.removeEventListener('load', onLoad);
+        reject(new Error('Failed to load result image'));
+      };
+      elements.resultImage.addEventListener('load', onLoad, { once: true });
+      elements.resultImage.addEventListener('error', onError, { once: true });
+      elements.resultImage.src = resultDataUrl;
+    });
+
+    setTargetProgress(100);
 
     await storeOriginalResult(state.resultBase64);
 

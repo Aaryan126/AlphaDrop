@@ -916,35 +916,59 @@ async function removeBackground(imageDataUrl, sendProgress, method = 'matting') 
 
   sendProgress("Refining edges", 65);
 
-  // Apply enhanced post-processing pipeline with method-specific parameters
-  const refinedMask = refineMask(
-    rawMask,
-    maskWidth,
-    maskHeight,
-    imageData.data,
-    image.width,
-    image.height,
-    method
-  );
+  let finalMask;
+
+  if (method === 'matting') {
+    // Alpha mode: Use raw AI model output only (no post-processing)
+    // Just bilinear upscale the mask to original resolution
+    sendProgress("Upscaling mask", 75);
+
+    // Convert raw mask to float for upscaling
+    const maskFloat = new Float32Array(maskWidth * maskHeight);
+    for (let i = 0; i < rawMask.length; i++) {
+      maskFloat[i] = rawMask[i] / 255;
+    }
+
+    // Bilinear upscale to original resolution
+    const upscaledMask = bilinearUpscale(maskFloat, maskWidth, maskHeight, image.width, image.height);
+
+    // Convert back to Uint8Array
+    finalMask = new Uint8Array(image.width * image.height);
+    for (let i = 0; i < upscaledMask.length; i++) {
+      finalMask[i] = Math.round(Math.max(0, Math.min(1, upscaledMask[i])) * 255);
+    }
+  } else {
+    // Segmentation mode: Apply full post-processing pipeline for hard edges
+    finalMask = refineMask(
+      rawMask,
+      maskWidth,
+      maskHeight,
+      imageData.data,
+      image.width,
+      image.height,
+      method
+    );
+  }
 
   sendProgress("Applying mask", 88);
 
-  // Apply refined mask as alpha channel
-  for (let i = 0; i < refinedMask.length; i++) {
-    imageData.data[i * 4 + 3] = refinedMask[i];
+  // Apply mask as alpha channel
+  for (let i = 0; i < finalMask.length; i++) {
+    imageData.data[i * 4 + 3] = finalMask[i];
   }
 
   sendProgress("Cleaning edges", 94);
 
-  // Apply color defringing to remove background color contamination from edge pixels
-  // This replaces the RGB of semi-transparent pixels with colors from nearby opaque foreground
-  // For segmentation mode, use tighter alpha thresholds for more aggressive cleanup
-  const isSegmentation = method === 'segmentation';
-  const defringeAlphaLow = isSegmentation ? 10 : 5;    // Higher = more aggressive
-  const defringeAlphaHigh = isSegmentation ? 240 : 250; // Lower = more aggressive
-  defringe(imageData, image.width, image.height, 10, defringeAlphaLow, defringeAlphaHigh);
+  // Apply color defringing only for segmentation mode
+  // For matting mode, we keep the raw AI output without color manipulation
+  if (method === 'segmentation') {
+    // For segmentation mode, use tighter alpha thresholds for aggressive cleanup
+    defringe(imageData, image.width, image.height, 10, 10, 240);
+  }
 
   ctx.putImageData(imageData, 0, 0);
+
+  sendProgress("Finalizing", 95);
 
   // Convert to blob and then to data URL
   const blob = await canvas.convertToBlob({ type: "image/png" });
@@ -952,7 +976,7 @@ async function removeBackground(imageDataUrl, sendProgress, method = 'matting') 
 
   return new Promise((resolve) => {
     reader.onloadend = () => {
-      sendProgress("Done", 100);
+      // Don't send 100% here - let popup handle final progress when image is displayed
       resolve(reader.result);
     };
     reader.readAsDataURL(blob);
