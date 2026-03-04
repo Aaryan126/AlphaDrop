@@ -9,7 +9,9 @@
       "Bash(powershell -Command \"Remove-Item backend.zip -ErrorAction SilentlyContinue; Compress-Archive -Path backend\\\\* -DestinationPath backend.zip -Force\")",
       "WebSearch",
       "Bash(pushd:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(npm run release:*)",
+      "Bash(echo:*)"
     ]
   }
 }

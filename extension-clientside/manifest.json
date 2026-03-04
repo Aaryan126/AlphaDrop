@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AlphaDrop",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "AI-powered background removal that runs entirely in your browser. Fast, private, and free.",
   "permissions": ["contextMenus", "activeTab", "storage", "offscreen"],
   "host_permissions": ["<all_urls>"],

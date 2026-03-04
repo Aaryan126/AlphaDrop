@@ -22,27 +22,55 @@ async function loadModel(sendProgress) {
 
   sendProgress("Loading model...", 0);
 
-  model = await AutoModel.from_pretrained("briaai/RMBG-1.4", {
-    device: "webgpu",
-    dtype: "fp32",
-    progress_callback: (progress) => {
-      if (progress.status === "progress") {
-        sendProgress("Downloading model", Math.round(progress.progress));
-      }
+  // Check WebGPU availability before attempting to use it
+  let useWebGPU = false;
+  try {
+    if (typeof navigator !== 'undefined' && navigator.gpu) {
+      const adapter = await navigator.gpu.requestAdapter();
+      useWebGPU = !!adapter;
     }
-  }).catch(async () => {
-    // Fallback to WASM if WebGPU not available
-    sendProgress("WebGPU unavailable, using WASM...", 0);
-    return AutoModel.from_pretrained("briaai/RMBG-1.4", {
-      device: "wasm",
-      dtype: "fp32",
-      progress_callback: (progress) => {
-        if (progress.status === "progress") {
-          sendProgress("Downloading model", Math.round(progress.progress));
+  } catch (e) {
+    // WebGPU not available
+    useWebGPU = false;
+  }
+
+  if (useWebGPU) {
+    sendProgress("Using WebGPU acceleration...", 0);
+    try {
+      model = await AutoModel.from_pretrained("briaai/RMBG-1.4", {
+        device: "webgpu",
+        dtype: "fp32",
+        progress_callback: (progress) => {
+          if (progress.status === "progress") {
+            sendProgress("Downloading model", Math.round(progress.progress));
+          }
         }
-      }
-    });
-  });
+      });
+    } catch (webgpuError) {
+      console.warn("WebGPU model loading failed, falling back to WASM:", webgpuError);
+      useWebGPU = false;
+      model = null;
+    }
+  }
+
+  // Fallback to WASM if WebGPU not available or failed
+  if (!model) {
+    sendProgress("Using WASM backend...", 0);
+    try {
+      model = await AutoModel.from_pretrained("briaai/RMBG-1.4", {
+        device: "wasm",
+        dtype: "fp32",
+        progress_callback: (progress) => {
+          if (progress.status === "progress") {
+            sendProgress("Downloading model", Math.round(progress.progress));
+          }
+        }
+      });
+    } catch (wasmError) {
+      console.error("WASM model loading also failed:", wasmError);
+      throw new Error("Failed to load AI model. Please ensure the extension is installed correctly and try reloading the page.");
+    }
+  }
 
   processor = await AutoProcessor.from_pretrained("briaai/RMBG-1.4");
   sendProgress("Model loaded", 100);
